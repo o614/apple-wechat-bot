@@ -53,7 +53,7 @@
 │   └── consts.js    # 静态数据配置 (Constants & Config)
 ├── package.json     # 项目依赖
 └── README.md        # 说明文档
-
+``` 
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=o614/apple-wechat-bot&type=date&legend=top-left)](https://www.star-history.com/#o614/apple-wechat-bot&type=date&legend=top-left)
