@@ -163,20 +163,35 @@ async function handleChartQuery(regionName, chartType) {
   const regionCode = getCountryCode(regionName);
   if (!regionCode) return '不支持的地区或格式错误。';
 
-  const type = chartType === '免费榜' ? 'top-free' : 'top-paid';
-  const url = `https://rss.marketingtools.apple.com/api/v2/${regionCode}/apps/${type}/10/apps.json`;
+  // 【修改 1】改用旧版 iTunes RSS 接口，稳定性远高于新版接口
+  const typePath = chartType === '免费榜' ? 'topfreeapplications' : 'toppaidapplications';
+  const url = `https://itunes.apple.com/${regionCode}/rss/${typePath}/limit=10/json`;
 
   try {
     const data = await getJSON(url);
-    const apps = (data && data.feed && data.feed.results) || [];
-    if (!apps.length) return '获取榜单失败，请稍后再试。';
+    
+    // 【修改 2】旧版接口的数据在 feed.entry 里
+    const apps = (data && data.feed && data.feed.entry) || [];
+    
+    // 如果接口返回空数据，直接返回错误提示
+    if (!apps.length) return '获取榜单失败，可能 Apple 接口暂时繁忙。';
 
     let resultText = `${regionName}${chartType}\n${getFormattedTime()}\n\n`;
 
     resultText += apps.map((app, idx) => {
-      const appId = String(app.id || '');
-      const appName = app.name || '未知应用';
-      const appUrl = app.url;
+      // 【修改 3】旧版数据结构解析（兼容性写法）
+      const appId = app.id && app.id.attributes ? app.id.attributes['im:id'] : '';
+      const appName = (app['im:name'] && app['im:name'].label) || '未知应用';
+      
+      // 解析链接：旧版接口的 link 可能是数组，取第一个作为链接
+      let appUrl = '';
+      if (Array.isArray(app.link) && app.link.length > 0) {
+          appUrl = app.link[0].attributes.href;
+      } else if (app.link && app.link.attributes) {
+          appUrl = app.link.attributes.href;
+      }
+
+      // 过滤黑名单
       if (BLOCKED_APP_IDS.has(appId)) return `${idx + 1}、${appName}`;
       return appUrl ? `${idx + 1}、<a href="${appUrl}">${appName}</a>` : `${idx + 1}、${appName}`;
     }).join('\n');
@@ -186,7 +201,8 @@ async function handleChartQuery(regionName, chartType) {
     resultText += `\n\n${SOURCE_NOTE}`;
     return resultText;
   } catch (e) {
-    console.error('Error in handleChartQuery:', e.message || e);
+    // 打印具体错误日志，方便你在 Vercel 后台查看
+    console.error('Chart Query Error:', e.message || e);
     return '获取榜单失败，请稍后再试。';
   }
 }
