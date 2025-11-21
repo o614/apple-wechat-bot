@@ -13,7 +13,7 @@ const parser = new Parser({ explicitArray: false, trim: true });
 const builder = new Builder({ cdata: true, rootName: 'xml', headless: true });
 
 const HTTP = axios.create({
-  timeout: 6000, // 适当增加超时时间，因为多了一个汇率请求
+  timeout: 6000, 
   headers: { 'user-agent': 'Mozilla/5.0 (Serverless-WeChatBot)' }
 });
 
@@ -159,7 +159,7 @@ async function getJSON(url, { timeout = 6000, retries = 1 } = {}) {
   throw lastErr;
 }
 
-// 【功能 1：榜单查询】已修复为旧版 iTunes 接口
+// 【榜单查询】旧版接口
 async function handleChartQuery(regionName, chartType) {
   const regionCode = getCountryCode(regionName);
   if (!regionCode) return '不支持的地区或格式错误。';
@@ -218,39 +218,29 @@ function formatPrice(r) {
   return '未知';
 }
 
-// 【新增功能】获取招商银行实时汇率
-async function fetchCmbExchangeRate(targetCurrencyCode) {
-  // 如果原币种就是人民币，不需要换算
+// 【核心修改】改用 Frankfurter 开源汇率接口，支持 Vercel
+async function fetchExchangeRate(targetCurrencyCode) {
+  // 如果是人民币，或者没有货币代码，直接返回
   if (!targetCurrencyCode || targetCurrencyCode.toUpperCase() === 'CNY') return null;
   
   try {
-    // 调用招商银行公开 API
-    const url = 'https://fx.cmbchina.com/api/v1/fx/rate';
+    // Frankfurter API: 专门面向开发者，不拦截云服务器 IP
+    // 格式: https://api.frankfurter.app/latest?from=USD&to=CNY
+    const url = `https://api.frankfurter.app/latest?from=${targetCurrencyCode.toUpperCase()}&to=CNY`;
     const { data } = await axios.get(url, { timeout: 3000 });
     
-    // 解析返回的数据 (招行通常返回一个数组)
-    const rateList = Array.isArray(data) ? data : (data.body || []);
-    
-    // 查找对应币种 (例如 'USD' 或 'JPY')
-    // 招行 API 的字段通常包含 ziCode (币种代码) 和 cenPrice (中间价) 或 huiSell (现汇卖出价)
-    const item = rateList.find(r => 
-      r.ziCode === targetCurrencyCode.toUpperCase() || 
-      r.cyEng === targetCurrencyCode.toUpperCase()
-    );
-
-    if (item) {
-      // 优先使用“现汇卖出价”(huiSell) 或者“中间价”(cenPrice)
-      // ⚠️ 注意：银行汇率通常是“每100外币”的价格，例如美元是 724.12，所以计算时要除以 100
-      const rate = parseFloat(item.huiSell || item.cenPrice || item.rate || 0);
-      return rate > 0 ? rate : null;
+    // 接口返回格式: { amount: 1.0, base: "USD", date: "2023-xx-xx", rates: { CNY: 7.24 } }
+    if (data && data.rates && data.rates.CNY) {
+      return data.rates.CNY;
     }
   } catch (e) {
-    console.error('CMB Rate Fetch Error:', e.message); // 出错时不中断主流程，只是看日志
+    // 如果货币不支持（例如某些极小众货币），或者网络超时，记录日志但不报错
+    // 常见支持：USD, JPY, EUR, GBP, KRW, TRL 等
+    console.error(`Exchange Rate Error (${targetCurrencyCode}):`, e.message);
   }
   return null;
 }
 
-// 【功能 2：价格查询】已集成汇率换算
 async function handlePriceQuery(appName, regionName, isDefaultSearch) {
   const code = getCountryCode(regionName);
   if (!code) return `不支持的地区或格式错误：${regionName}`;
@@ -267,16 +257,17 @@ async function handlePriceQuery(appName, regionName, isDefaultSearch) {
 
     let replyText = `您搜索的“${appName}”最匹配的结果是：\n\n${link}\n\n地区：${regionName}\n价格：${priceText}`;
 
-    // --- 汇率换算逻辑开始 ---
+    // --- 汇率换算逻辑 (V3.0) ---
     if (typeof best.price === 'number' && best.price > 0 && best.currency) {
-      const rate = await fetchCmbExchangeRate(best.currency);
+      // 获取汇率 (直接返回 7.24 这种格式)
+      const rate = await fetchExchangeRate(best.currency);
       if (rate) {
-        // 计算公式：原价 * (汇率 / 100)
-        const cnyPrice = (best.price * (rate / 100)).toFixed(2);
+        // 计算价格：原价 * 汇率
+        const cnyPrice = (best.price * rate).toFixed(2);
         replyText += ` (≈ ¥${cnyPrice})`;
       }
     }
-    // --- 汇率换算逻辑结束 ---
+    // --- 逻辑结束 ---
 
     replyText += `\n时间：${getFormattedTime()}`;
     if (isDefaultSearch) replyText += `\n\n想查其他地区？试试发送：\n价格 ${appName} 日本`;
