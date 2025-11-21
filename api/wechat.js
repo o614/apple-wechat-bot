@@ -292,7 +292,7 @@ async function handlePriceQuery(appName, regionName, isDefaultSearch) {
     // --- 逻辑结束 ---
 
     replyText += `\n时间：${getFormattedTime()}`;
-    if (isDefaultSearch) replyText += `\n\n想查其他地区？试试发送：\n价格 ${appName} 日本`;
+    if (isDefaultSearch) replyText += `\n\n想查其他地区？试试发送：\n价格${appName}日本`;
     
     return replyText + `\n\n${SOURCE_NOTE}`;
   } catch (e) {
@@ -561,4 +561,5 @@ function determinePlatformsFromDevices(devices) {
 
     return platforms;
 }
+
 
