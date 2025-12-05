@@ -13,7 +13,7 @@ const parser = new Parser({ explicitArray: false, trim: true });
 const builder = new Builder({ cdata: true, rootName: 'xml', headless: true });
 
 const HTTP = axios.create({
-  timeout: 6000, 
+  timeout: 4000, 
   headers: { 'user-agent': 'Mozilla/5.0 (Serverless-WeChatBot)' }
 });
 
@@ -379,7 +379,7 @@ async function fetchGdmf() {
   };
   const agent = new https.Agent({ rejectUnauthorized: false });
   try {
-    const response = await HTTP.get(url, { timeout: 15000, headers: headers, httpsAgent: agent });
+    const response = await HTTP.get(url, { timeout: 4000, headers: headers, httpsAgent: agent });
     if (!response.data || typeof response.data !== 'object') {
         console.error('fetchGdmf Error: Received invalid data format from GDMF.');
         throw new Error('Received invalid data format from GDMF.');
@@ -557,4 +557,5 @@ function determinePlatformsFromDevices(devices) {
 
     return platforms;
 }
+
 
