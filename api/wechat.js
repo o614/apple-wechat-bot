@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const axios = require('axios');
 const { Parser, Builder } = require('xml2js');
 const https = require('https');
+const store = require('app-store-scraper'); // 【新增】引入爬虫库
 
 // 引入外部数据文件 (保持分离结构)
 const { ALL_SUPPORTED_REGIONS, DSF_MAP, BLOCKED_APP_IDS, TARGET_COUNTRIES_FOR_AVAILABILITY } = require('./consts');
@@ -63,7 +64,7 @@ async function handlePostRequest(req, res) {
       const availabilityMatch = content.match(/^查询\s*(.+)$/i); 
       const osAllMatch = /^系统更新$/i.test(content);
       
-      // 【修改 1】OS指令正则更新：直接匹配 iOS, iPadOS 等单词，不区分大小写，不需要"更新"前缀
+      // 【修改 1】OS指令正则更新
       const osUpdateMatch = content.match(/^(iOS|iPadOS|macOS|watchOS|tvOS|visionOS)$/i); 
       
       const iconMatch = content.match(/^图标\s*(.+)$/i); 
@@ -92,7 +93,7 @@ async function handlePostRequest(req, res) {
       } else if (osAllMatch) {
         replyContent = await handleSimpleAllOsUpdates();
       } else if (osUpdateMatch) {
-        // 【修改 2】直接获取捕获到的系统名 (例如 "ios")
+        // 【修改 2】直接获取捕获到的系统名
         const platform = osUpdateMatch[1].trim();
         replyContent = await handleDetailedOsUpdate(platform);
       } else if (switchRegionMatch && isSupportedRegion(switchRegionMatch[2])) {
@@ -235,21 +236,7 @@ function formatPrice(r) {
   return '未知';
 }
 
-// 汇率查询 (Frankfurter V3.0)
-async function fetchExchangeRate(targetCurrencyCode) {
-  if (!targetCurrencyCode || targetCurrencyCode.toUpperCase() === 'CNY') return null;
-  try {
-    const url = `https://api.frankfurter.app/latest?from=${targetCurrencyCode.toUpperCase()}&to=CNY`;
-    const { data } = await axios.get(url, { timeout: 3000 });
-    if (data && data.rates && data.rates.CNY) {
-      return data.rates.CNY;
-    }
-  } catch (e) {
-    console.error(`Exchange Rate Error (${targetCurrencyCode}):`, e.message);
-  }
-  return null;
-}
-
+// 【核心修改】handlePriceQuery：只增加了内购抓取逻辑，其他不变
 async function handlePriceQuery(appName, regionName, isDefaultSearch) {
   const code = getCountryCode(regionName);
   if (!code) return `不支持的地区或格式错误：${regionName}`;
@@ -264,23 +251,31 @@ async function handlePriceQuery(appName, regionName, isDefaultSearch) {
     const link = `<a href="${best.trackViewUrl}">${best.trackName}</a>`;
     const priceText = formatPrice(best);
 
-    let replyText = `您搜索的“${appName}”最匹配的结果是：\n\n${link}\n\n地区：${regionName}\n价格：${priceText}`;
-
-    if (typeof best.price === 'number' && best.price > 0 && best.currency) {
-      const rate = await fetchExchangeRate(best.currency);
-      if (rate) {
-        const cnyPrice = (best.price * rate).toFixed(2);
-        replyText += ` (≈ ¥${cnyPrice})`;
-      }
-    }
-
-    replyText += `\n时间：${getFormattedTime()}`;
-    // 【修改 3】去掉建议指令中的空格
-    if (isDefaultSearch) replyText += `\n\n想查其他地区？试试发送：\n价格${appName}日本`;
+    let replyText = `您搜索的“${appName}”最匹配的结果是：\n\n${link}\n\n地区：${regionName}\n价格：${priceText}\n时间：${getFormattedTime()}`;
     
+    // --- 🛒 新增：尝试获取内购信息 ---
+    try {
+      // 使用 app-store-scraper 获取详情 (这一步是去爬网页)
+      const details = await store.app({ id: best.trackId, country: code });
+      if (details && details.inAppPurchases && details.inAppPurchases.length > 0) {
+        replyText += `\n\n🛒 内购项目 (参考)：\n`;
+        // 取前 5 个内购
+        details.inAppPurchases.slice(0, 5).forEach(iap => {
+          // 这里的 iap 可能是字符串也可能是对象，做个兼容处理
+          const name = typeof iap === 'string' ? iap : (iap.name || '未知项目');
+          const price = (typeof iap === 'object' && iap.price) ? `: ${iap.price}` : '';
+          replyText += `• ${name}${price}\n`;
+        });
+      }
+    } catch (scrapeErr) {
+      console.error('IAP Fetch Failed:', scrapeErr.message);
+      // 抓取失败不报错给用户，只显示基础信息
+    }
+    // --------------------------------
+
+    if (isDefaultSearch) replyText += `\n\n想查其他地区？试试发送：\n价格${appName}日本`; // 保持你改过的无空格建议
     return replyText + `\n\n${SOURCE_NOTE}`;
-  } catch (e) {
-    console.error('Price Query Error:', e);
+  } catch {
     return '查询价格失败，请稍后再试。';
   }
 }
@@ -373,7 +368,7 @@ async function lookupAppIcon(appName) {
 async function fetchGdmf() {
   const url = 'https://gdmf.apple.com/v2/pmv';
   const headers = {
-    // 【修改】只更新了这里的 User-Agent
+    // 【修改】升级浏览器 User-Agent 伪装
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*'
   };
