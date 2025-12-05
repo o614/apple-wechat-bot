@@ -86,12 +86,13 @@ async function handlePostRequest(req, res) {
 }
 
 // --- 核心爬虫：手动抓取内购 ---
+// --- 核心爬虫：手动抓取内购 (通用暴力版) ---
 async function scrapeIAP(appUrl) {
   try {
-    // 伪装成 Mac Safari 浏览器
     const { data: html } = await axios.get(appUrl, {
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15',
+        // 伪装成最新的 Chrome，防止被识别为老旧设备
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
       }
     });
@@ -99,36 +100,51 @@ async function scrapeIAP(appUrl) {
     const $ = cheerio.load(html);
     const iapList = [];
 
-    // 针对 Apple 网页结构的特定选择器 (2025版)
-    // 查找 class="list-with-numbers__item" 这种结构
-    $('.list-with-numbers__item').each((i, el) => {
-      if (i >= 8) return; // 最多取8个
-      
-      const title = $(el).find('.list-with-numbers__item__title span').first().text().trim();
-      const price = $(el).find('.list-with-numbers__item__price').text().trim();
-      
-      if (title && price) {
-        iapList.push(`${title}: ${price}`);
+    // 策略 A: 通过 "信息" (Information) 栏目定位
+    // Apple 的内购通常在 <dt>App 内购买项目</dt> 旁边的 <dd> 里
+    let ddContainer = $('dt:contains("App 内购买项目"), dt:contains("In-App Purchases")').next('dd');
+    
+    // 如果策略 A 没找到，尝试策略 B: 找 h2 标题
+    if (ddContainer.length === 0) {
+        ddContainer = $('h2:contains("App 内购买项目"), h2:contains("In-App Purchases")').parent().next();
+    }
+
+    // 遍历容器里的 li 元素
+    ddContainer.find('li').each((i, el) => {
+      if (i >= 8) return; // 限制数量
+
+      // 尝试提取两段式结构 (名字 + 价格)
+      // 这里的结构通常是: <div>名字</div> <div>价格</div>
+      let name = $(el).find('span').first().text().trim();
+      let price = $(el).find('span').last().text().trim();
+
+      // 如果没找到 span，直接取纯文本进行分割
+      if (!name || !price || name === price) {
+          const rawText = $(el).text().trim().replace(/\s+/g, ' '); // 压缩空格
+          // 尝试用正则拆分价格 (匹配 ¥ 或 $ 结尾的部分)
+          const match = rawText.match(/(.+?)\s+([¥$]\s?[\d.,]+)/);
+          if (match) {
+              name = match[1];
+              price = match[2];
+          } else {
+              // 实在拆不开，就整行显示
+              name = rawText;
+              price = '';
+          }
+      }
+
+      if (name) {
+        iapList.push(price ? `${name}: ${price}` : name);
       }
     });
-
-    // 备用方案：如果上面没找到，尝试找 "inline-list__item" (某些旧版页面)
-    if (iapList.length === 0) {
-       $('.inline-list__item').each((i, el) => {
-          const title = $(el).find('.inline-list__item__title').text().trim();
-          const price = $(el).find('.inline-list__item__price').text().trim();
-          if (title && price) iapList.push(`${title}: ${price}`);
-       });
-    }
 
     if (iapList.length > 0) {
       return 'App 内购买项目 (参考)：\n' + iapList.join('\n');
     }
     
-    return '未检测到内购项目 (可能该应用无内购或页面结构变更)';
+    return '未检测到内购项目 (可能该应用无内购)';
 
   } catch (e) {
-    // 记录错误但不展示给用户具体堆栈
     console.error('Scrape Error:', e.message);
     if (e.response && (e.response.status === 403 || e.response.status === 429)) {
         return '内购数据获取失败 (服务器 IP 被限制)';
@@ -269,3 +285,4 @@ async function handleChartQuery(regionName, chartType) {
     return '获取榜单失败，请稍后再试。';
   }
 }
+
