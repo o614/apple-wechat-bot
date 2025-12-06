@@ -2,6 +2,11 @@
 
 这是一个运行在 Serverless 环境（如 Vercel）下的微信公众号后台服务。它专为 Apple 生态用户设计，提供 App Store 榜单查询、价格查询、系统更新监测以及高清图标提取等实用功能。
 
+![IMG_2789](https://github.com/user-attachments/assets/1d66b0d9-9a2d-4c83-80e0-96a4444cb9c1)
+![IMG_2790](https://github.com/user-attachments/assets/fcb011d9-5a63-4478-8593-ce2f4085875c)
+![IMG_2788](https://github.com/user-attachments/assets/a0f28df6-c922-4527-a59c-db87a31d9ec3)
+
+
 ## ✨ 主要功能
 
 * **📊 榜单查询**：支持查询全球主要国家/地区的 App Store 免费榜和付费榜 Top 10。
