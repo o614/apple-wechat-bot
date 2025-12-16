@@ -1,0 +1,75 @@
+name: Bot Doctor (全链路体检)
+
+on:
+  schedule:
+    - cron: '15 * * * *' # 每小时的第15分钟自动运行一次
+  workflow_dispatch: # 允许你手动点击按钮立刻检测
+
+jobs:
+  health_check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Dependencies
+        run: npm install axios xml2js
+
+      - name: Run Diagnosis
+        env:
+          # ⚠️ 这里填你 Cloudflare 或者 Vercel 的最终地址
+          API_URL: 'https://你的域名/api/wechat' 
+        run: |
+          node -e '
+            const axios = require("axios");
+            const xml2js = require("xml2js");
+
+            // 1. 构造模拟微信的 XML 请求包 (模拟用户发送 "价格 QQ")
+            const mockPayload = `
+              <xml>
+                <ToUserName><![CDATA[gh_monitor]]></ToUserName>
+                <FromUserName><![CDATA[monitor_tester]]></FromUserName>
+                <CreateTime>${Math.floor(Date.now() / 1000)}</CreateTime>
+                <MsgType><![CDATA[text]]></MsgType>
+                <Content><![CDATA[价格 QQ]]></Content>
+              </xml>
+            `;
+
+            console.log("🏥 [医生] 开始对机器人进行全面体检...");
+            console.log("🔗 目标接口:", process.env.API_URL);
+
+            // 2. 发送 POST 请求 (模拟微信服务器)
+            axios.post(process.env.API_URL, mockPayload, {
+              headers: { "Content-Type": "text/xml" },
+              timeout: 15000 // 给15秒超时时间，防止冷启动慢
+            })
+            .then(async res => {
+              console.log("✅ HTTP 状态码:", res.status);
+              
+              // 3. 解析返回的 XML
+              const parser = new xml2js.Parser({ explicitArray: false });
+              const result = await parser.parseStringPromise(res.data);
+              const replyText = result.xml.Content;
+
+              console.log("📝 机器人回复内容摘要:", replyText.substring(0, 100) + "...");
+
+              // 4. 核心逻辑判断：不仅要通，还要对！
+              // 必须包含 "内购" 或者 "价格" 才算成功，否则说明爬虫挂了
+              if (replyText.includes("内购") || replyText.includes("价格")) {
+                console.log("🎉 [诊断结果]：机器人非常健康！内购抓取功能正常。");
+                process.exit(0); // 成功退出
+              } else {
+                console.error("💉 [诊断结果]：机器人还活着，但“脑子”坏了！(未检测到内购数据)");
+                console.error("可能是 Apple 封了 IP，或者 Cheerio 解析失效。");
+                process.exit(1); // 报错退出，触发报警
+              }
+            })
+            .catch(err => {
+              console.error("🚑 [抢救失败]：连接超时或服务器崩溃！");
+              console.error("错误详情:", err.message);
+              if (err.response) {
+                console.error("响应数据:", err.response.data);
+              }
+              process.exit(1); // 报错退出，触发报警
+            });
+          '
