@@ -7,6 +7,11 @@ const https = require('https');
 // 引入外部数据文件 (保持分离结构)
 const { ALL_SUPPORTED_REGIONS, DSF_MAP, BLOCKED_APP_IDS, TARGET_COUNTRIES_FOR_AVAILABILITY } = require('./consts');
 
+// ⚠️⚠️⚠️【必填】请把这里改成你在微信后台填的那个 URL 的域名部分 ⚠️⚠️⚠️
+// 例如：'https://wx-proxy.你的域名.com' 或 'https://你的项目.vercel.app'
+// 注意：不要带 /api/wechat 后缀，只要域名！
+const YOUR_DOMAIN = 'https://wxproxy.290935.xyz'; 
+
 const WECHAT_TOKEN = process.env.WECHAT_TOKEN;
 
 const parser = new Parser({ explicitArray: false, trim: true });
@@ -20,10 +25,53 @@ const HTTP = axios.create({
 const SOURCE_NOTE = '*数据来源 Apple 官方*';
 
 module.exports = async (req, res) => {
-  if (req.method === 'GET') return handleVerification(req, res);
+  // 【修改 A】入口增加中转页拦截
+  if (req.method === 'GET') {
+    if (req.query.mode === 'switch_store') {
+        return renderSwitchPage(res, req.query.region);
+    }
+    return handleVerification(req, res);
+  }
   if (req.method === 'POST') return handlePostRequest(req, res);
   res.status(200).send('');
 };
+
+// 【修改 B】新增：渲染中转页 (解决微信篡改链接问题)
+function renderSwitchPage(res, regionCode) {
+    const dsf = DSF_MAP[regionCode] || '143441'; // 默认美国
+    const stableAppId = '375380948'; // iTunes Movie Trailers
+    const redirectUrl = `/WebObjects/MZStore.woa/wa/viewSoftware?mt=8&id=${stableAppId}`;
+    
+    // 生成 App Store 专用协议链接 (itms-apps://)
+    const magicLink = `itms-apps://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${dsf}&cc=${regionCode}&url=${encodeURIComponent(redirectUrl)}`;
+    
+    // 返回自动跳转的 HTML
+    const html = `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>正在切换商店...</title>
+<style>
+  body { font-family: -apple-system, sans-serif; text-align: center; padding: 40px 20px; background: #f2f2f7; }
+  .btn { display: inline-block; background: #007aff; color: white; padding: 12px 24px; border-radius: 12px; text-decoration: none; font-weight: bold; margin-top: 20px; }
+  p { color: #888; font-size: 14px; }
+</style>
+</head>
+<body>
+  <h3>正在跳转 App Store...</h3>
+  <p>如果是第一次跳转，请在弹窗中点击“打开”。</p>
+  <p>如果没有反应，请点击下方按钮：</p>
+  <a href="${magicLink}" class="btn">前往 ${regionCode === 'cn' ? '中国' : '外区'} 商店</a>
+  <script>
+    window.location.href = "${magicLink}";
+  </script>
+</body>
+</html>`;
+
+    res.setHeader('Content-Type', 'text/html');
+    return res.send(html);
+}
 
 function handleVerification(req, res) {
   try {
@@ -63,7 +111,6 @@ async function handlePostRequest(req, res) {
       const availabilityMatch = content.match(/^查询\s*(.+)$/i); 
       const osAllMatch = /^系统更新$/i.test(content);
       
-      // 【修改 1】OS指令正则更新：直接匹配 iOS, iPadOS 等单词，不区分大小写，不需要"更新"前缀
       const osUpdateMatch = content.match(/^(iOS|iPadOS|macOS|watchOS|tvOS|visionOS)$/i); 
       
       const iconMatch = content.match(/^图标\s*(.+)$/i); 
@@ -75,7 +122,6 @@ async function handlePostRequest(req, res) {
       } else if (priceMatchAdvanced && isSupportedRegion(priceMatchAdvanced[2])) {
         replyContent = await handlePriceQuery(priceMatchAdvanced[1].trim(), priceMatchAdvanced[2].trim(), false);
       } else if (priceMatchSimple) {
-        // 智能无空格匹配逻辑
         let queryAppName = priceMatchSimple[1].trim();
         let targetRegion = '美国';
         let isDefaultSearch = true;
@@ -92,7 +138,6 @@ async function handlePostRequest(req, res) {
       } else if (osAllMatch) {
         replyContent = await handleSimpleAllOsUpdates();
       } else if (osUpdateMatch) {
-        // 【修改 2】直接获取捕获到的系统名 (例如 "ios")
         const platform = osUpdateMatch[1].trim();
         replyContent = await handleDetailedOsUpdate(platform);
       } else if (switchRegionMatch && isSupportedRegion(switchRegionMatch[2])) {
@@ -275,7 +320,6 @@ async function handlePriceQuery(appName, regionName, isDefaultSearch) {
     }
 
     replyText += `\n时间：${getFormattedTime()}`;
-    // 【修改 3】去掉建议指令中的空格
     if (isDefaultSearch) replyText += `\n\n想查其他地区？试试发送：\n价格${appName}日本`;
     
     return replyText + `\n\n${SOURCE_NOTE}`;
@@ -285,20 +329,16 @@ async function handlePriceQuery(appName, regionName, isDefaultSearch) {
   }
 }
 
+// 【修改 C】handleRegionSwitch 修改为生成中转链接
 function handleRegionSwitch(regionName) {
   const regionCode = getCountryCode(regionName);
-  const dsf = DSF_MAP[regionCode];
-  if (!regionCode || !dsf) return '不支持的地区或格式错误。';
+  if (!regionCode) return '不支持的地区或格式错误。';
 
-  const stableAppId = '375380948';
-  const redirect = `/WebObjects/MZStore.woa/wa/viewSoftware?mt=8&id=${stableAppId}`;
-  const fullUrl = `https://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${dsf}&cc=${regionCode}&url=${encodeURIComponent(redirect)}`;
+  // 指向我们自己的服务器，触发 'renderSwitchPage'
+  const switchUrl = `${YOUR_DOMAIN}/api/wechat?mode=switch_store&region=${regionCode}`;
+  const cnUrl = `${YOUR_DOMAIN}/api/wechat?mode=switch_store&region=cn`;
 
-  const cnCode = 'cn';
-  const cnDsf = DSF_MAP[cnCode];
-  const cnUrl = `https://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${cnDsf}&cc=${cnCode}&url=${encodeURIComponent(redirect)}`;
-
-  return `注意！仅浏览，需账号才能下载。\n\n<a href="${fullUrl}">› 点击切换至【${regionName}】 App Store</a>\n\n› 点此切换至 <a href="${cnUrl}">【大陆】</a> App Store\n\n*出现“无法连接”后将自动跳转*`;
+  return `注意！仅浏览，需账号才能下载。\n\n<a href="${switchUrl}">› 点击切换至【${regionName}】 App Store</a>\n\n› 点此切换至 <a href="${cnUrl}">【大陆】</a> App Store\n\n*出现“无法连接”后将自动跳转*`;
 }
 
 async function handleAvailabilityQuery(appName) {
@@ -373,7 +413,6 @@ async function lookupAppIcon(appName) {
 async function fetchGdmf() {
   const url = 'https://gdmf.apple.com/v2/pmv';
   const headers = {
-    // 【修改】只更新了这里的 User-Agent
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
     'Accept': 'application/json, text/plain, */*'
   };
@@ -420,7 +459,6 @@ function toBeijingYMD(s) {
   return `${y}-${m}-${d2}`;
 }
 
-// 【修改 4】系统更新概览：链接优化 (去掉"更新"和"详情"文字，变成两列蓝色可点击)
 async function handleSimpleAllOsUpdates() {
   try {
     const data = await fetchGdmf();
@@ -437,11 +475,9 @@ async function handleSimpleAllOsUpdates() {
 
     let replyText = `最新系统版本：\n\n${results.join('\n')}\n\n查看详情：\n`;
     
-    // 生成蓝色点击链接: 微信协议 <a href="weixin://bizmsgmenu?msgmenucontent=关键词&msgmenuid=ID">显示文字</a>
-    // 排版：使用空格模拟两列布局
     replyText += `› <a href="weixin://bizmsgmenu?msgmenucontent=iOS&msgmenuid=iOS">iOS</a>      › <a href="weixin://bizmsgmenu?msgmenucontent=iPadOS&msgmenuid=iPadOS">iPadOS</a>\n`;
     replyText += `› <a href="weixin://bizmsgmenu?msgmenucontent=macOS&msgmenuid=macOS">macOS</a>    › <a href="weixin://bizmsgmenu?msgmenucontent=watchOS&msgmenuid=watchOS">watchOS</a>\n`;
-    replyText += `› <a href="weixin://bizmsgmenu?msgmenucontent=tvOS&msgmenuid=tvOS">tvOS</a>     › <a href="weixin://bizmsgmenu?msgmenucontent=visionOS&msgmenuid=visionOS">visionOS</a>\n`;
+    replyText += `› <a href="weixin://bizmsgmenu?msgmenucontent=tvOS&msgmenuid=tvOS">tvOS</a>      › <a href="weixin://bizmsgmenu?msgmenucontent=visionOS&msgmenuid=visionOS">visionOS</a>\n`;
     replyText += `\n${SOURCE_NOTE}`;
 
     return replyText;
@@ -557,5 +593,3 @@ function determinePlatformsFromDevices(devices) {
 
     return platforms;
 }
-
-
