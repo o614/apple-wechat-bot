@@ -298,7 +298,7 @@ function handleRegionSwitch(regionName) {
   const cnDsf = DSF_MAP[cnCode];
   const cnUrl = `https://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${cnDsf}&cc=${cnCode}&url=${encodeURIComponent(redirect)}`;
 
-  return `注意！仅浏览，需账号才能下载。\n\n<a href="${fullUrl}">› 点击切换至【${regionName}】 App Store</a>\n\n› 点此切换至 <a href="${cnUrl}">【大陆】</a> App Store\n\n*出现“无法连接”后将自动跳转*`;
+  return `注意！仅浏览，需账号才能下载。\n\n<a href="${fullUrl}">› 点击切换至【${regionName}】 App Store</a>\n\n› 点此切换至 <a href="${cnUrl}">【大陆】</a> App Store\n\n*出现“无法连接”后将自动跳转*\n\n*目前暂不支持 iOS 26 系统*`;
 }
 
 async function handleAvailabilityQuery(appName) {
@@ -557,3 +557,4 @@ function determinePlatformsFromDevices(devices) {
 
     return platforms;
 }
+
