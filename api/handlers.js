@@ -2,7 +2,8 @@
 const { 
   getCountryCode, getJSON, getFormattedTime, SOURCE_NOTE, 
   pickBestMatch, formatPrice, fetchExchangeRate, 
-  fetchGdmf, collectReleases, normalizePlatform, toBeijingYMD 
+  fetchGdmf, collectReleases, normalizePlatform, toBeijingYMD,
+  checkUsageLimit, SEPARATOR // 引入检查函数和分隔符
 } = require('./utils');
 
 const { DSF_MAP, BLOCKED_APP_IDS, TARGET_COUNTRIES_FOR_AVAILABILITY } = require('./consts');
@@ -147,8 +148,20 @@ async function checkAvailability(trackId) {
   return available;
 }
 
-// 5. 图标查询
-async function lookupAppIcon(appName) {
+// 5. 图标查询 (👇 核心修改点)
+async function lookupAppIcon(appName, openId) {
+  // 🛑 限制检测：每天 3 次
+  const isAllowed = await checkUsageLimit(openId, 'icon', 3);
+  
+  if (!isAllowed) {
+    return `查询失败：今日额度已用完\n` +
+           `${SEPARATOR}\n` +
+           `图标查询功能每天限用 3 次。\n` +
+           `您今天的机会已用尽，请明天再来。\n` +
+           `${SEPARATOR}\n` +
+           `💡 提示：取关重新关注无法重置额度`;
+  }
+
   try {
     const url = `https://itunes.apple.com/search?term=${encodeURIComponent(appName)}&country=us&entity=software&limit=1`;
     const data = await getJSON(url, { timeout: 8000 });
@@ -187,7 +200,6 @@ async function handleSimpleAllOsUpdates() {
     if (!results.length) return '暂未获取到系统版本信息，请稍后再试。';
 
     let replyText = `最新系统版本：\n\n${results.join('\n')}\n\n查看详情：\n`;
-    
     replyText += `› <a href="weixin://bizmsgmenu?msgmenucontent=iOS&msgmenuid=iOS">iOS</a>      › <a href="weixin://bizmsgmenu?msgmenucontent=iPadOS&msgmenuid=iPadOS">iPadOS</a>\n`;
     replyText += `› <a href="weixin://bizmsgmenu?msgmenucontent=macOS&msgmenuid=macOS">macOS</a>    › <a href="weixin://bizmsgmenu?msgmenucontent=watchOS&msgmenuid=watchOS">watchOS</a>\n`;
     replyText += `› <a href="weixin://bizmsgmenu?msgmenucontent=tvOS&msgmenuid=tvOS">tvOS</a>      › <a href="weixin://bizmsgmenu?msgmenucontent=visionOS&msgmenuid=visionOS">visionOS</a>\n`;
