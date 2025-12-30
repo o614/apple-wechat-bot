@@ -151,7 +151,7 @@ module.exports = async (req, res) => {
         const result = handlers.handleRegionSwitch(region);
         return reply(result);
       }
-      return; // 拦截成功后不再继续
+      return; 
     }
 
     // 5. 榜单查询 (限流: rank)
@@ -168,7 +168,7 @@ module.exports = async (req, res) => {
       return;
     }
 
-    // 6. 上架查询 (限流: search)
+    // 6. 上架查询 (限流: search) - 修复重点！！
     // 匹配: "查询TikTok" -> 查的是可下载地区 (handleAvailabilityQuery)
     const availabilityMatch = content.match(/^查询\s*(.+)$/i);
     if (availabilityMatch) {
