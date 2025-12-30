@@ -27,12 +27,12 @@ module.exports = async (req, res) => {
     const xml = result.xml;
 
     const toUser = xml.ToUserName[0];
-    const fromUser = xml.FromUserName[0]; // 👈 这个就是用户的 OpenID
+    const fromUser = xml.FromUserName[0]; // 用户的 OpenID
     const msgType = xml.MsgType ? xml.MsgType[0] : '';
     const eventType = xml.Event ? xml.Event[0] : '';
     const content = xml.Content ? xml.Content[0].trim() : '';
 
-    console.log(`[Message] User: ${fromUser}, Type: ${msgType}, Event: ${eventType}`);
+    console.log(`[Message] User: ${fromUser}, Type: ${msgType}, Event: ${eventType}, Content: ${content}`);
 
     const reply = (text) => {
       const now = Math.floor(Date.now() / 1000);
@@ -49,10 +49,9 @@ module.exports = async (req, res) => {
       res.status(200).send(xmlResponse);
     };
 
-    // 👇👇👇 这里的欢迎语加上了 OpenID 👇👇👇
+    // 1. 处理关注事件
     if (msgType === 'event' && eventType === 'subscribe') {
       const welcomeText = 
-        `用户 ID：${fromUser}\n\n` +  // 👈 新增：显示 OpenID
         `恭喜！你发现了果粉秘密基地\n\n` +
         `› <a href="weixin://bizmsgmenu?msgmenucontent=付款方式&msgmenuid=付款方式">付款方式</a>\n获取注册地址信息\n\n` +
         `› <a href="weixin://bizmsgmenu?msgmenucontent=查询TikTok&msgmenuid=1">查询TikTok</a>\n热门地区上架查询\n\n` +
@@ -64,7 +63,12 @@ module.exports = async (req, res) => {
       return reply(welcomeText);
     }
 
-    // 普通指令逻辑 (保持不变)
+    // 2. 处理 myid 指令
+    if (content.toLowerCase() === 'myid') {
+      return reply(`你的 OpenID 是：\n${fromUser}`);
+    }
+
+    // 3. 其他指令
     if (content === '更新' || content.toLowerCase() === 'update') {
       const result = await handlers.handleSimpleAllOsUpdates();
       return reply(result);
@@ -80,11 +84,16 @@ module.exports = async (req, res) => {
       return reply(result);
     }
     else {
-      return reply('收到！试试点击菜单里的功能，或者发送“图标 微信”？');
+      // 👇👇👇 改动在这里 👇👇👇
+      // 如果没有匹配到任何指令，直接回 'success'。
+      // 微信收到 'success' 后，不会给用户发任何消息，也不会报错。
+      // 这样就不会干扰你公众号的其他功能了。
+      return res.status(200).send('success');
     }
 
   } catch (error) {
     console.error('[Error]', error);
+    // 报错时也回 success，保持静默，防止微信服务器一直重试
     res.status(200).send('success');
   }
 };
