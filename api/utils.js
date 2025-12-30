@@ -1,21 +1,12 @@
 // api/utils.js
 const axios = require('axios');
 const https = require('https');
-
-// Optional: Vercel KV for VIP & rate limiting (safe to run without KV in dev)
-let kv = null;
-try {
-  ({ kv } = require('@vercel/kv'));
-} catch (e) {
-  kv = null;
-}
-
 const { ALL_SUPPORTED_REGIONS } = require('./consts');
 
 const SOURCE_NOTE = '*数据来源 Apple 官方*';
 
 const HTTP = axios.create({
-  timeout: 4000,
+  timeout: 4000, 
   headers: { 'user-agent': 'Mozilla/5.0 (Serverless-WeChatBot)' }
 });
 
@@ -23,130 +14,118 @@ const HTTP = axios.create({
 function getCountryCode(identifier) {
   const trimmed = String(identifier || '').trim();
   const key = trimmed.toLowerCase();
-  if (!trimmed) return null;
-
-  // 1) 直接 country code
-  if (/^[a-z]{2}$/.test(key)) return key;
-
-  // 2) 中文地区名称
-  const code = ALL_SUPPORTED_REGIONS[trimmed];
-  return code || null;
+  if (ALL_SUPPORTED_REGIONS[trimmed]) return ALL_SUPPORTED_REGIONS[trimmed];
+  if (/^[a-z]{2}$/i.test(key)) {
+    for (const name in ALL_SUPPORTED_REGIONS) {
+      if (ALL_SUPPORTED_REGIONS[name] === key) return key;
+    }
+  }
+  return '';
 }
 
 function isSupportedRegion(identifier) {
   return !!getCountryCode(identifier);
 }
 
+// 获取北京时间
 function getFormattedTime() {
   const now = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+  const bj = new Date(now.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
+  const yyyy = String(bj.getFullYear());
+  const mm = String(bj.getMonth() + 1).padStart(2, '0');
+  const dd = String(bj.getDate()).padStart(2, '0');
+  const hh = String(bj.getHours()).padStart(2, '0');
+  const mi = String(bj.getMinutes()).padStart(2, '0');
+  return `${yyyy.slice(-2)}/${mm}/${dd} ${hh}:${mi}`;
 }
 
-async function getJSON(url, options = {}) {
-  const { timeout } = options;
-  const res = await HTTP.get(url, { timeout: timeout || 4000 });
-  return res.data;
+// 封装 GET 请求
+async function getJSON(url, { timeout = 6000, retries = 1 } = {}) {
+  let lastErr;
+  for (let i = 0; i <= retries; i++) {
+    try {
+      const { data } = await HTTP.get(url, { timeout });
+      return data;
+    } catch (err) {
+      lastErr = err;
+      if (i < retries) await new Promise(r => setTimeout(r, 250 * Math.pow(2, i)));
+    }
+  }
+  throw lastErr;
 }
 
+// 价格相关工具
 function pickBestMatch(query, results) {
-  if (!Array.isArray(results) || results.length === 0) return null;
   const q = String(query || '').trim().toLowerCase();
   if (!q) return results[0];
-
-  // 完全匹配 trackName
-  const exact = results.find(r => (r.trackName || '').toLowerCase() === q);
+  const exact = results.find(r => String(r.trackName || '').toLowerCase() === q);
   if (exact) return exact;
-
-  // 包含匹配
-  const includes = results.find(r => (r.trackName || '').toLowerCase().includes(q));
-  if (includes) return includes;
-
-  // fallback
+  const contains = results.find(r => String(r.trackName || '').toLowerCase().includes(q));
+  if (contains) return contains;
   return results[0];
 }
 
-function formatPrice(price, currency) {
-  if (price === 0) return `免费`;
-  if (price == null) return `未知`;
-  return `${price} ${currency || ''}`.trim();
-}
-
-async function fetchExchangeRate(currency) {
-  try {
-    const url = `https://open.er-api.com/v6/latest/${encodeURIComponent(currency)}`;
-    const data = await getJSON(url, { timeout: 4000 });
-    const cny = data?.rates?.CNY;
-    if (!cny) return null;
-    return cny;
-  } catch (e) {
-    return null;
+function formatPrice(r) {
+  if (r.formattedPrice) return r.formattedPrice.replace(/^Free$/i, '免费');
+  if (typeof r.price === 'number') {
+    return r.price === 0 ? '免费' : `${r.currency || ''} ${r.price.toFixed(2)}`.trim();
   }
+  return '未知';
 }
 
-async function fetchGdmf() {
-  const agent = new https.Agent({ rejectUnauthorized: false });
-  const url = `https://gdmf.apple.com/v2/pmv`;
-  const res = await HTTP.get(url, { httpsAgent: agent, timeout: 6000 });
-  return res.data;
-}
-
-function normalizePlatform(p) {
-  const s = String(p || '').trim().toLowerCase();
-  if (!s) return null;
-  if (s === 'ios') return 'iOS';
-  if (s === 'ipados') return 'iPadOS';
-  if (s === 'macos') return 'macOS';
-  if (s === 'watchos') return 'watchOS';
-  if (s === 'tvos') return 'tvOS';
-  if (s === 'visionos') return 'visionOS';
+async function fetchExchangeRate(targetCurrencyCode) {
+  if (!targetCurrencyCode || targetCurrencyCode.toUpperCase() === 'CNY') return null;
+  try {
+    const url = `https://api.frankfurter.app/latest?from=${targetCurrencyCode.toUpperCase()}&to=CNY`;
+    const { data } = await axios.get(url, { timeout: 3000 });
+    if (data && data.rates && data.rates.CNY) {
+      return data.rates.CNY;
+    }
+  } catch (e) {
+    console.error(`Exchange Rate Error (${targetCurrencyCode}):`, e.message);
+  }
   return null;
 }
 
-function toBeijingYMD(isoStr) {
+// 系统更新相关工具
+async function fetchGdmf() {
+  const url = 'https://gdmf.apple.com/v2/pmv';
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/plain, */*'
+  };
+  const agent = new https.Agent({ rejectUnauthorized: false });
   try {
-    const date = new Date(isoStr);
-    const bj = new Date(date.getTime() + 8 * 60 * 60 * 1000);
-    const pad = (n) => String(n).padStart(2, '0');
-    return `${bj.getUTCFullYear()}-${pad(bj.getUTCMonth() + 1)}-${pad(bj.getUTCDate())}`;
-  } catch (e) {
-    return '';
+    const response = await HTTP.get(url, { timeout: 4000, headers: headers, httpsAgent: agent });
+    if (!response.data || typeof response.data !== 'object') {
+        console.error('fetchGdmf Error: Received invalid data format from GDMF.');
+        throw new Error('Received invalid data format from GDMF.');
+    }
+    return response.data;
+  } catch (error) {
+    throw new Error('fetchGdmf Error');
   }
 }
 
-// 从 SupportedDevices 推断平台
-function determinePlatformsFromDevices(supportedDevices) {
-  const platforms = new Set();
-  if (!Array.isArray(supportedDevices)) return platforms;
-
-  let hasIOS = false;
-  let hasIPadOS = false;
-  let hasWatchOS = false;
-  let hasTVOS = false;
-  let hasMacOS = false;
-  let hasVisionOS = false;
-
-  for (const d of supportedDevices) {
-    const s = String(d || '').toLowerCase();
-    if (s.includes('iphone')) hasIOS = true;
-    if (s.includes('ipad')) hasIPadOS = true;
-    if (s.includes('watch')) hasWatchOS = true;
-    if (s.includes('appletv')) hasTVOS = true;
-    if (s.includes('mac')) hasMacOS = true;
-    if (s.includes('realitydevice')) hasVisionOS = true;
-  }
-
-  if (hasIOS) platforms.add('iOS');
-  if (hasIPadOS) platforms.add('iPadOS');
-  if (hasWatchOS) platforms.add('watchOS');
-  if (hasTVOS) platforms.add('tvOS');
-  if (hasMacOS) platforms.add('macOS');
-  if (hasVisionOS) platforms.add('visionOS');
-
-  return platforms;
+function normalizePlatform(p) {
+  const k = String(p || '').toLowerCase();
+  if (['ios','iphoneos','iphone'].includes(k)) return 'iOS';
+  if (['ipados','ipad'].includes(k)) return 'iPadOS';
+  if (['macos','mac','osx'].includes(k)) return 'macOS';
+  if (['watchos','watch'].includes(k)) return 'watchOS';
+  if (['tvos','apple tv','tv'].includes(k)) return 'tvOS';
+  if (['visionos','vision'].includes(k)) return 'visionOS';
+  return null;
 }
 
-// 收集版本发布信息（支持总览和单个平台）
+function toBeijingYMD(s) {
+  if (!s) return '';
+  const d = new Date(s); if (isNaN(d)) return '';
+  const bj = new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
+  const y = bj.getFullYear(), m = String(bj.getMonth()+1).padStart(2,'0'), d2 = String(bj.getDate()).padStart(2,'0');
+  return `${y}-${m}-${d2}`;
+}
+
 function collectReleases(data, platform) {
   const releases = [];
   const targetOS = normalizePlatform(platform);
@@ -159,122 +138,59 @@ function collectReleases(data, platform) {
     const assetSet = data[setName];
     if (assetSet && typeof assetSet === 'object') {
       for (const sourceKey in assetSet) {
-        const platformArray = assetSet[sourceKey];
-        if (platformArray && Array.isArray(platformArray)) {
-          platformArray.forEach(node => {
-            if (node && typeof node === 'object') {
-              const version = node.ProductVersion || node.OS;
-              const build = node.Build;
-              const date = node.PostingDate || node.PublicReleaseDate || node.ReleaseDate;
-              const supportedDevices = node.SupportedDevices;
+          const platformArray = assetSet[sourceKey];
+          if (platformArray && Array.isArray(platformArray)) {
+              platformArray.forEach(node => {
+                  if (node && typeof node === 'object') {
+                      const version = node.ProductVersion || node.OSVersion || node.SystemVersion || null;
+                      const build   = node.Build || node.BuildID || node.BuildVersion || null;
+                      const dateStr = node.PostingDate || node.ReleaseDate || node.Date || node.PublishedDate || node.PublicationDate || null;
+                      const devices = node.SupportedDevices;
 
-              const platforms = determinePlatformsFromDevices(supportedDevices);
-              if (!platforms.has(targetOS)) return;
-              if (!build || foundBuilds.has(build)) return;
-              foundBuilds.add(build);
-
-              releases.push({
-                os: targetOS,
-                version,
-                build,
-                date
+                      if (version && build && !foundBuilds.has(build)) {
+                          const actualPlatforms = determinePlatformsFromDevices(devices);
+                          if (actualPlatforms.has(targetOS)) {
+                              releases.push({ os: targetOS, version, build, date: dateStr, raw: node });
+                              foundBuilds.add(build);
+                          }
+                          else if (targetOS === 'iPadOS' && actualPlatforms.has('iOS')) {
+                              const versionNum = parseFloat(version);
+                              if (!isNaN(versionNum) && versionNum >= 13.0) {
+                                  releases.push({ os: targetOS, version, build, date: dateStr, raw: node });
+                                  foundBuilds.add(build);
+                              }
+                          }
+                      }
+                  }
               });
-            }
-          });
-        }
+          }
       }
     }
   }
-
-  // 新->旧
-  releases.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   return releases;
 }
 
-// ------------------------------
-// VIP & Usage limit (per day)
-// ------------------------------
-
-// Format date in user's timezone (Asia/Singapore, same as UTC+8)
-function getLocalDateStr() {
-  try {
-    const parts = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Singapore',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit'
-    }).formatToParts(new Date());
-    const y = parts.find(p => p.type === 'year')?.value;
-    const m = parts.find(p => p.type === 'month')?.value;
-    const d = parts.find(p => p.type === 'day')?.value;
-    if (y && m && d) return `${y}-${m}-${d}`;
-  } catch (_) {}
-  // Fallback (UTC)
-  return new Date().toISOString().slice(0, 10);
-}
-
-async function isVip(openId) {
-  if (!kv || !openId) return false;
-  try {
-    const v = await kv.get(`vip:${openId}`);
-    return v === true || v === '1' || v === 1 || v === 'true';
-  } catch (e) {
-    return false;
-  }
-}
-
-/**
- * Check & consume usage for a given action.
- * - VIP: always allowed (no counting)
- * - Non-VIP: count per day in KV
- * If KV is unavailable, default to allow (to avoid blocking users).
- */
-async function checkUsageLimit(openId, action, maxLimit) {
-  if (!openId || !action || !maxLimit) return { allowed: true };
-
-  // If no KV, don't block
-  if (!kv) return { allowed: true };
-
-  const vip = await isVip(openId);
-  if (vip) return { allowed: true, isVip: true };
-
-  const day = getLocalDateStr();
-  const key = `usage:${action}:${day}:${openId}`;
-
-  try {
-    const used = await kv.incr(key);
-
-    // Set expiry if this is the first time today
-    if (used === 1) {
-      // 24h expiry is simple & robust
-      await kv.expire(key, 60 * 60 * 24);
+function determinePlatformsFromDevices(devices) {
+    const platforms = new Set();
+    if (!Array.isArray(devices)) return platforms;
+    let hasIOS = false; let hasIPadOS = false; let hasWatchOS = false;
+    let hasTVOS = false; let hasMacOS = false; let hasVisionOS = false;
+    for (const device of devices) {
+        const d = String(device || '').toLowerCase();
+        if (d.startsWith('iphone') || d.startsWith('ipod')) hasIOS = true;
+        else if (d.startsWith('ipad')) hasIPadOS = true;
+        else if (d.startsWith('watch')) hasWatchOS = true;
+        else if (d.startsWith('appletv') || d.startsWith('audioaccessory')) hasTVOS = true;
+        else if (d.startsWith('j') || d.startsWith('mac-') || d.includes('macos') || d.startsWith('vmm') || d.startsWith('x86') || /^[A-Z]\d{3}[A-Z]{2}AP$/i.test(device)) hasMacOS = true;
+        else if (d.startsWith('realitydevice')) hasVisionOS = true;
     }
-
-    if (used > maxLimit) return { allowed: false, used, limit: maxLimit, isVip: false };
-    return { allowed: true, used, limit: maxLimit, isVip: false };
-  } catch (e) {
-    // KV error -> allow (best-effort)
-    return { allowed: true };
-  }
-}
-
-/**
- * Manage VIP status in KV.
- * @param {'add'|'del'} op
- * @param {string} openId
- */
-async function manageVip(op, openId) {
-  if (!kv) throw new Error('KV 未配置或不可用');
-  if (!openId) throw new Error('缺少 openId');
-  if (op === 'add') {
-    await kv.set(`vip:${openId}`, '1');
-    return true;
-  }
-  if (op === 'del') {
-    await kv.del(`vip:${openId}`);
-    return true;
-  }
-  throw new Error('未知操作');
+    if (hasIOS) platforms.add('iOS');
+    if (hasIPadOS) platforms.add('iPadOS');
+    if (hasWatchOS) platforms.add('watchOS');
+    if (hasTVOS) platforms.add('tvOS');
+    if (hasMacOS) platforms.add('macOS');
+    if (hasVisionOS) platforms.add('visionOS');
+    return platforms;
 }
 
 module.exports = {
@@ -291,11 +207,5 @@ module.exports = {
   normalizePlatform,
   toBeijingYMD,
   collectReleases,
-  determinePlatformsFromDevices,
-
-  // VIP & limits
-  checkUsageLimit,
-  manageVip,
-  isVip,
-  getLocalDateStr
+  determinePlatformsFromDevices
 };
