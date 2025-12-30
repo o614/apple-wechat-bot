@@ -1,4 +1,5 @@
 // api/wechat.js
+// fix kv connection
 const crypto = require('crypto');
 const { Parser, Builder } = require('xml2js');
 const { ALL_SUPPORTED_REGIONS } = require('./consts');
@@ -121,3 +122,4 @@ function buildTextReply(toUser, fromUser, content) {
   };
   return builder.buildObject(payload);
 }
+
