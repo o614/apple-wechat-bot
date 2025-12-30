@@ -34,6 +34,8 @@ async function handlePostRequest(req, res) {
     const parsedXml = await parser.parseStringPromise(rawBody);
     message = parsedXml.xml || {};
 
+    const openId = message.FromUserName;
+
     if (message.MsgType === 'event' && message.Event === 'subscribe') {
       replyContent =
         `恭喜！你发现了果粉秘密基地\n\n` +
@@ -45,109 +47,79 @@ async function handlePostRequest(req, res) {
         `› <a href="weixin://bizmsgmenu?msgmenucontent=图标QQ&msgmenuid=5">图标QQ</a>\n获取官方高清图标\n\n更多服务请戳底部菜单栏了解`;
     } else if (message.MsgType === 'text' && typeof message.Content === 'string') {
       const content = message.Content.trim();
-      
-      const chartV2Match = content.match(/^榜单\s*(.+)$/i); 
-      const chartMatch = content.match(/^(.*?)(免费榜|付费榜)$/); 
-      const priceMatchAdvanced = content.match(/^价格\s*(.+?)\s+([a-zA-Z\u4e00-\u9fa5]+)$/i); 
-      const priceMatchSimple = content.match(/^价格\s*(.+)$/i); 
-      const switchRegionMatch = content.match(/^(切换|地区)\s*([a-zA-Z\u4e00-\u9fa5]+)$/i); 
-      const availabilityMatch = content.match(/^查询\s*(.+)$/i); 
+
+      const chartV2Match = content.match(/^榜单\s*(.+)$/i);
+      const chartMatch = content.match(/^(.*?)(免费榜|付费榜)$/);
+      const priceMatchAdvanced = content.match(/^价格\s*(.+?)\s+([a-zA-Z\u4e00-\u9fa5]+)$/i);
+      const priceMatchSimple = content.match(/^价格\s*(.+)$/i);
+      const switchRegionMatch = content.match(/^(切换|地区)\s*([a-zA-Z\u4e00-\u9fa5]+)$/i);
+      const availabilityMatch = content.match(/^查询\s*(.+)$/i);
       const osAllMatch = /^系统更新$/i.test(content);
-      const osUpdateMatch = content.match(/^(iOS|iPadOS|macOS|watchOS|tvOS|visionOS)$/i); 
-      const iconMatch = content.match(/^图标\s*(.+)$/i); 
+      const osUpdateMatch = content.match(/^(iOS|iPadOS|macOS|watchOS|tvOS|visionOS)$/i);
+      const iconMatch = content.match(/^图标\s*(.+)$/i);
 
       // 路由转发 (Routing)
-      // 1) 榜单 v2
-if (chartV2Match && isSupportedRegion(chartV2Match[1])) {
-  const gate = await checkAbuseGate(message.FromUserName);
-  if (!gate.allowed) {
-    replyContent = gate.message;
-  } else {
-    replyContent = await Handlers.handleChartQuery(chartV2Match[1].trim(), '免费榜');
-  }
+      if (chartV2Match && isSupportedRegion(chartV2Match[1])) {
+        const gate = await checkAbuseGate(openId);
+        replyContent = gate.allowed ? await Handlers.handleChartQuery(chartV2Match[1].trim(), '免费榜') : gate.message;
 
-// 2) 榜单 free/paid
-} else if (chartMatch && isSupportedRegion(chartMatch[1])) {
-  const gate = await checkAbuseGate(message.FromUserName);
-  if (!gate.allowed) {
-    replyContent = gate.message;
-  } else {
-    replyContent = await Handlers.handleChartQuery(chartMatch[1].trim(), chartMatch[2]);
-  }
+      } else if (chartMatch && isSupportedRegion(chartMatch[1])) {
+        const gate = await checkAbuseGate(openId);
+        replyContent = gate.allowed ? await Handlers.handleChartQuery(chartMatch[1].trim(), chartMatch[2]) : gate.message;
 
-// 3) 价格（带地区）
-} else if (priceMatchAdvanced && isSupportedRegion(priceMatchAdvanced[2])) {
-  const gate = await checkAbuseGate(message.FromUserName);
-  if (!gate.allowed) {
-    replyContent = gate.message;
-  } else {
-    replyContent = await Handlers.handlePriceQuery(priceMatchAdvanced[1].trim(), priceMatchAdvanced[2].trim(), false);
-  }
+      } else if (priceMatchAdvanced && isSupportedRegion(priceMatchAdvanced[2])) {
+        const gate = await checkAbuseGate(openId);
+        replyContent = gate.allowed ? await Handlers.handlePriceQuery(priceMatchAdvanced[1].trim(), priceMatchAdvanced[2].trim(), false) : gate.message;
 
-// 4) 价格（默认/末尾地区剥离）
-} else if (priceMatchSimple) {
-  const gate = await checkAbuseGate(message.FromUserName);
-  if (!gate.allowed) {
-    replyContent = gate.message;
-  } else {
-    let queryAppName = priceMatchSimple[1].trim();
-    let targetRegion = '美国';
-    let isDefaultSearch = true;
-    for (const countryName in ALL_SUPPORTED_REGIONS) {
-      if (queryAppName.endsWith(countryName) && queryAppName.length > countryName.length) {
-        targetRegion = countryName;
-        queryAppName = queryAppName.slice(0, -countryName.length).trim();
-        isDefaultSearch = false;
-        break;
+      } else if (priceMatchSimple) {
+        const gate = await checkAbuseGate(openId);
+        if (!gate.allowed) {
+          replyContent = gate.message;
+        } else {
+          let queryAppName = priceMatchSimple[1].trim();
+          let targetRegion = '美国';
+          let isDefaultSearch = true;
+          for (const countryName in ALL_SUPPORTED_REGIONS) {
+            if (queryAppName.endsWith(countryName) && queryAppName.length > countryName.length) {
+              targetRegion = countryName;
+              queryAppName = queryAppName.slice(0, -countryName.length).trim();
+              isDefaultSearch = false;
+              break;
+            }
+          }
+          replyContent = await Handlers.handlePriceQuery(queryAppName, targetRegion, isDefaultSearch);
+        }
+
+      } else if (osAllMatch) {
+        const gate = await checkAbuseGate(openId);
+        replyContent = gate.allowed ? await Handlers.handleSimpleAllOsUpdates() : gate.message;
+
+      } else if (osUpdateMatch) {
+        const gate = await checkAbuseGate(openId);
+        if (!gate.allowed) {
+          replyContent = gate.message;
+        } else {
+          const platform = osUpdateMatch[1].trim();
+          replyContent = await Handlers.handleDetailedOsUpdate(platform);
+        }
+
+      } else if (switchRegionMatch && isSupportedRegion(switchRegionMatch[2])) {
+        // 切换地区不请求 Apple（只是拼链接），不走闸门，避免误伤体验
+        replyContent = Handlers.handleRegionSwitch(switchRegionMatch[2].trim());
+
+      } else if (availabilityMatch) {
+        const gate = await checkAbuseGate(openId);
+        replyContent = gate.allowed ? await Handlers.handleAvailabilityQuery(availabilityMatch[1].trim()) : gate.message;
+
+      } else if (iconMatch) {
+        const appName = iconMatch[1].trim();
+        if (appName) {
+          const gate = await checkAbuseGate(openId);
+          replyContent = gate.allowed ? await Handlers.lookupAppIcon(appName) : gate.message;
+        }
       }
     }
-    replyContent = await Handlers.handlePriceQuery(queryAppName, targetRegion, isDefaultSearch);
-  }
-
-// 5) 系统更新总览
-} else if (osAllMatch) {
-  const gate = await checkAbuseGate(message.FromUserName);
-  if (!gate.allowed) {
-    replyContent = gate.message;
-  } else {
-    replyContent = await Handlers.handleSimpleAllOsUpdates();
-  }
-
-// 6) 单平台更新
-} else if (osUpdateMatch) {
-  const gate = await checkAbuseGate(message.FromUserName);
-  if (!gate.allowed) {
-    replyContent = gate.message;
-  } else {
-    const platform = osUpdateMatch[1].trim();
-    replyContent = await Handlers.handleDetailedOsUpdate(platform);
-  }
-
-// 7) 切换地区（不加闸，保持旧体验）
-} else if (switchRegionMatch && isSupportedRegion(switchRegionMatch[2])) {
-  replyContent = Handlers.handleRegionSwitch(switchRegionMatch[2].trim());
-
-// 8) 上架地区查询
-} else if (availabilityMatch) {
-  const gate = await checkAbuseGate(message.FromUserName);
-  if (!gate.allowed) {
-    replyContent = gate.message;
-  } else {
-    replyContent = await Handlers.handleAvailabilityQuery(availabilityMatch[1].trim());
-  }
-
-// 9) 图标
-} else if (iconMatch) {
-  const appName = iconMatch[1].trim();
-  if (appName) {
-    const gate = await checkAbuseGate(message.FromUserName);
-    if (!gate.allowed) {
-      replyContent = gate.message;
-    } else {
-      replyContent = await Handlers.lookupAppIcon(appName);
-    }
-  }
-}catch (error) {
+  } catch (error) {
     console.error('Error processing POST:', error.message || error);
   }
 
@@ -177,4 +149,3 @@ function buildTextReply(toUser, fromUser, content) {
   };
   return builder.buildObject(payload);
 }
-
