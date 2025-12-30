@@ -1,23 +1,34 @@
 const axios = require('axios');
 const https = require('https');
-const { kv } = require('@vercel/kv'); // 引入数据库
-const { ALL_SUPPORTED_REGIONS } = require('./consts');
+const { kv } = require('@vercel/kv');
+const { ALL_SUPPORTED_REGIONS } = require('./consts'); // 确保你有这个文件，如果没有就忽略这行报错
 
-const HTTP = axios.create({ timeout: 4000 });
+// 模拟 headers，防反爬
+const HTTP = axios.create({
+  timeout: 6000,
+  headers: {
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+  }
+});
 
-// 👇👇👇 核心检查逻辑 (升级版) 👇👇👇
+// ==========================================
+// 🛡️ 核心：限额与VIP检查
+// ==========================================
 async function checkUsageLimit(openId, action, maxLimit) {
-  if (!openId) return true;
+  if (!openId) return true; // 没ID就放行(防止报错)
 
-  // 1. ✨ 优先检查是否为 VIP
-  // 我们约定 VIP 的 Key 格式为: "vip:用户OpenID"
-  const isVip = await kv.get(`vip:${openId}`);
-  if (isVip) {
-    console.log(`[VIP] User ${openId} is VIP. Pass.`);
-    return true; // 👑 VIP 直接放行，不扣次数
+  // 1. 👑 检查是否为 VIP
+  try {
+    const isVip = await kv.get(`vip:${openId}`);
+    if (isVip) {
+      console.log(`[VIP] User ${openId} is VIP. Pass.`);
+      return true; // VIP 直接放行
+    }
+  } catch (e) {
+    console.warn('VIP Check Error:', e.message);
   }
 
-  // 2. 普通用户检查逻辑 (保持不变)
+  // 2. 普通限额检查
   const today = new Date().toISOString().split('T')[0];
   const key = `limit:${action}:${today}:${openId}`;
 
@@ -28,51 +39,111 @@ async function checkUsageLimit(openId, action, maxLimit) {
     if (count >= maxLimit) return false; // 🚫 拦截
 
     await kv.incr(key); 
-    await kv.expire(key, 86400); 
+    await kv.expire(key, 86400); // 24小时过期
     return true; 
   } catch (e) {
     console.error('KV Error:', e.message);
-    return true; 
+    return true; // 数据库挂了就默认放行，别卡死用户
   }
 }
 
-// 👇👇👇 新增：管理员管理 VIP 的函数 👇👇👇
+// ==========================================
+// 👮‍♂️ 管理员：VIP 管理
+// ==========================================
 async function manageVip(command, targetOpenId) {
+  if (!targetOpenId) return '❌ 请输入用户 OpenID';
   const vipKey = `vip:${targetOpenId}`;
   
-  if (command === 'add') {
-    // 设为 VIP (这里设为永久，也可以设置过期时间)
-    await kv.set(vipKey, '1'); 
-    return `✅ 成功！用户 \n${targetOpenId}\n 已升级为尊贵的 VIP，无限制使用！`;
-  } 
-  
-  else if (command === 'del') {
-    // 取消 VIP
-    await kv.del(vipKey);
-    return `👋 已取消 \n${targetOpenId}\n 的 VIP 资格。`;
+  try {
+    if (command === 'add') {
+      await kv.set(vipKey, '1'); 
+      return `✅ 成功！\n用户 ${targetOpenId}\n已升级为永久 VIP！`;
+    } else if (command === 'del') {
+      await kv.del(vipKey);
+      return `👋 已取消 \n${targetOpenId}\n的 VIP 资格。`;
+    }
+    return '指令错误：请使用 vip add 或 vip del';
+  } catch (e) {
+    return `操作失败: ${e.message}`;
   }
-  
-  return '指令错误';
 }
 
-// ... 下面的 helper 函数保持不变 ...
-// (为了篇幅，我这里简写了，请务必保留你原来 utils.js 下面那些 fetchGdmf, getJSON 等所有函数)
-// ⚠️ 记得把 manageVip 导出出去！
+// ==========================================
+// 🛠️ 工具函数 (爬虫/数据处理)
+// ==========================================
+async function getJSON(url) {
+  try {
+    const { data } = await HTTP.get(url);
+    return data;
+  } catch (err) {
+    console.error('Fetch JSON Error:', err.message);
+    return {}; // 返回空对象防止崩溃
+  }
+}
 
+async function fetchGdmf() {
+  const url = 'https://gdmf.apple.com/v2/pmv';
+  const agent = new https.Agent({ rejectUnauthorized: false }); // 忽略证书错误
+  try {
+    const response = await axios.get(url, { 
+      timeout: 5000, 
+      httpsAgent: agent,
+      headers: { 'User-Agent': 'Mozilla/5.0' }
+    });
+    return response.data;
+  } catch (error) { 
+    console.error('GDMF Error:', error.message);
+    return null; 
+  }
+}
+
+function formatPrice(r) {
+  if (!r) return '未知';
+  if (r.formattedPrice) return r.formattedPrice.replace(/^Free$/i, '免费');
+  if (typeof r.price === 'number') return r.price === 0 ? '免费' : `${r.currency || ''} ${r.price.toFixed(2)}`;
+  return '未知';
+}
+
+function toBeijingYMD(s) {
+  if (!s) return '';
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s;
+  const bj = new Date(d.toLocaleString('en-US', { timeZone: 'Asia/Shanghai' }));
+  return `${bj.getFullYear()}-${String(bj.getMonth()+1).padStart(2,'0')}-${String(bj.getDate()).padStart(2,'0')}`;
+}
+
+// 简单的版本收集逻辑
+function collectReleases(data, platform) {
+  if (!data || !data.PublicAssetSets) return [];
+  const releases = [];
+  const sets = data.PublicAssetSets.iOS || []; // 默认取 iOS
+  
+  sets.forEach(item => {
+    if (item.ProductVersion && item.PostingDate) {
+      releases.push({
+        os: 'iOS',
+        version: item.ProductVersion,
+        build: item.Build,
+        date: item.PostingDate
+      });
+    }
+  });
+  // 排序：新日期在前
+  return releases.sort((a, b) => new Date(b.date) - new Date(a.date));
+}
+
+// 导出所有函数
 module.exports = {
-  HTTP,
   checkUsageLimit,
-  manageVip, // 👈 记得导出这个新函数
-  // ... 保留原来的导出 ...
-  getCountryCode: (id) => id, 
-  getJSON: axios.get,
+  manageVip,
+  getJSON,
+  fetchGdmf,
+  formatPrice,
+  toBeijingYMD,
+  collectReleases,
+  // 兼容旧代码的占位符
+  getCountryCode: (id) => id,
   isSupportedRegion: () => true,
-  pickBestMatch: (q, r) => r[0],
-  formatPrice: () => '免费',
-  fetchExchangeRate: () => null,
-  fetchGdmf: () => null,
-  normalizePlatform: (p) => p,
-  toBeijingYMD: (d) => d,
-  collectReleases: () => [],
-  determinePlatformsFromDevices: () => new Set()
+  pickBestMatch: (q, r) => r && r[0],
+  determinePlatformsFromDevices: () => new Set(['iOS'])
 };
