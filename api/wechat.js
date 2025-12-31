@@ -7,7 +7,7 @@ const Handlers = require('./handlers');
 
 const WECHAT_TOKEN = process.env.WECHAT_TOKEN;
 
-// Admin OpenIDs: comma-separated, e.g. "oAbc...,oXyz..."
+// Admin OpenIDs
 const ADMIN_OPENIDS = String(process.env.ADMIN_OPENIDS || '')
   .split(',')
   .map(s => s.trim())
@@ -64,52 +64,64 @@ async function handlePostRequest(req, res) {
 
     const openId = message.FromUserName;
 
-    // --- Event messages ---
     if (message.MsgType === 'event') {
       if (message.Event === 'subscribe') {
         const { isFirst } = await checkSubscribeFirstTime(openId);
         replyContent = isFirst ? buildWelcomeText('') : buildWelcomeText('欢迎回来！');
       }
-      // unsubscribe 事件通常无需回复，忽略即可
-    }
-
-    // --- Text messages ---
-    else if (message.MsgType === 'text' && typeof message.Content === 'string') {
+    } else if (message.MsgType === 'text' && typeof message.Content === 'string') {
       const content = message.Content.trim();
+      console.log(`[Msg] ${openId}: ${content}`);
 
-      // 方便你拿到自己的 openid，用来填 ADMIN_OPENIDS
       if (/^myid$/i.test(content)) {
         replyContent = `你的 OpenID：${openId}`;
       } else {
+        // --- 路由匹配 ---
+        
+        // 1. 榜单查询：匹配 "榜单美国"
         const chartV2Match = content.match(/^榜单\s*(.+)$/i);
-        const chartMatch = content.match(/^(.*?)(免费榜|付费榜)$/);
+        
+        // 2. 榜单详情：匹配 "美国付费榜" (优化了正则，容错空格)
+        const chartMatch = content.match(/^(.+?)\s*(免费榜|付费榜)$/i);
+        
+        // 3. 价格查询
         const priceMatchAdvanced = content.match(/^价格\s*(.+?)\s+([a-zA-Z\u4e00-\u9fa5]+)$/i);
         const priceMatchSimple = content.match(/^价格\s*(.+)$/i);
+        
+        // 4. 其他指令
         const switchRegionMatch = content.match(/^(切换|地区)\s*([a-zA-Z\u4e00-\u9fa5]+)$/i);
         const availabilityMatch = content.match(/^查询\s*(.+)$/i);
         const osAllMatch = /^系统更新$/i.test(content);
         const osUpdateMatch = content.match(/^(iOS|iPadOS|macOS|watchOS|tvOS|visionOS)$/i);
         const iconMatch = content.match(/^图标\s*(.+)$/i);
 
-        if (chartV2Match && isSupportedRegion(chartV2Match[1])) {
+
+        // --- 逻辑处理 ---
+
+        if (chartV2Match && isSupportedRegion(chartV2Match[1].trim())) {
+          // 命中：榜单美国 -> 默认查免费榜
           const gate = await gateOrBypass(openId);
           replyContent = gate.allowed
             ? await Handlers.handleChartQuery(chartV2Match[1].trim(), '免费榜')
             : gate.message;
 
-        } else if (chartMatch && isSupportedRegion(chartMatch[1])) {
+        } else if (chartMatch && isSupportedRegion(chartMatch[1].trim())) {
+          // 命中：美国付费榜
+          // chartMatch[1] = 地区, chartMatch[2] = 类型
           const gate = await gateOrBypass(openId);
           replyContent = gate.allowed
             ? await Handlers.handleChartQuery(chartMatch[1].trim(), chartMatch[2])
             : gate.message;
 
         } else if (priceMatchAdvanced && isSupportedRegion(priceMatchAdvanced[2])) {
+          // 命中：价格 Minecraft 日本
           const gate = await gateOrBypass(openId);
           replyContent = gate.allowed
             ? await Handlers.handlePriceQuery(priceMatchAdvanced[1].trim(), priceMatchAdvanced[2].trim(), false)
             : gate.message;
 
         } else if (priceMatchSimple) {
+          // 命中：价格 YouTube
           const gate = await gateOrBypass(openId);
           if (!gate.allowed) {
             replyContent = gate.message;
@@ -137,7 +149,6 @@ async function handlePostRequest(req, res) {
           replyContent = gate.allowed ? await Handlers.handleDetailedOsUpdate(osUpdateMatch[1].trim()) : gate.message;
 
         } else if (switchRegionMatch && isSupportedRegion(switchRegionMatch[2])) {
-          // 切换地区不请求 Apple（只是拼链接），不走闸门
           replyContent = Handlers.handleRegionSwitch(switchRegionMatch[2].trim());
 
         } else if (availabilityMatch) {
