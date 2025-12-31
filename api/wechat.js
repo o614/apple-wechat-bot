@@ -1,27 +1,11 @@
 // api/wechat.js
-// 修复了正则匹配逻辑，确保“地区+付费榜”不再静默失败
 const crypto = require('crypto');
 const { Parser, Builder } = require('xml2js');
+const { isSupportedRegion } = require('./utils');
 const { ALL_SUPPORTED_REGIONS } = require('./consts');
-const { isSupportedRegion, checkAbuseGate, checkSubscribeFirstTime } = require('./utils');
 const Handlers = require('./handlers');
 
 const WECHAT_TOKEN = process.env.WECHAT_TOKEN;
-
-// Admin OpenIDs
-const ADMIN_OPENIDS = String(process.env.ADMIN_OPENIDS || '')
-  .split(',')
-  .map(s => s.trim())
-  .filter(Boolean);
-
-function isAdmin(openId) {
-  return !!openId && ADMIN_OPENIDS.includes(String(openId));
-}
-
-async function gateOrBypass(openId) {
-  if (isAdmin(openId)) return { allowed: true };
-  return await checkAbuseGate(openId);
-}
 
 const parser = new Parser({ explicitArray: false, trim: true });
 const builder = new Builder({ cdata: true, rootName: 'xml', headless: true });
@@ -42,19 +26,6 @@ function handleVerification(req, res) {
   res.status(200).send('');
 }
 
-function buildWelcomeText(prefixLine = '') {
-  const base =
-    `恭喜！你发现了果粉秘密基地\n\n` +
-    `› <a href="weixin://bizmsgmenu?msgmenucontent=付款方式&msgmenuid=付款方式">付款方式</a>\n获取注册地址信息\n\n` +
-    `› <a href="weixin://bizmsgmenu?msgmenucontent=查询TikTok&msgmenuid=1">查询TikTok</a>\n热门地区上架查询\n\n` +
-    `› <a href="weixin://bizmsgmenu?msgmenucontent=榜单美国&msgmenuid=3">榜单美国</a>\n全球免费付费榜单\n\n` +
-    `› <a href="weixin://bizmsgmenu?msgmenucontent=价格YouTube&msgmenuid=2">价格YouTube</a>\n应用价格优惠查询\n\n` +
-    `› <a href="weixin://bizmsgmenu?msgmenucontent=切换美国&msgmenuid=4">切换美国</a>\n应用商店随意切换\n\n` +
-    `› <a href="weixin://bizmsgmenu?msgmenucontent=图标QQ&msgmenuid=5">图标QQ</a>\n获取官方高清图标\n\n更多服务请戳底部菜单栏了解`;
-
-  return prefixLine ? `${prefixLine}\n\n${base}` : base;
-}
-
 async function handlePostRequest(req, res) {
   let replyContent = '';
   let message = {};
@@ -63,113 +34,82 @@ async function handlePostRequest(req, res) {
     const parsedXml = await parser.parseStringPromise(rawBody);
     message = parsedXml.xml || {};
 
-    const openId = message.FromUserName;
-
-    // --- 事件消息 ---
-    if (message.MsgType === 'event') {
-      if (message.Event === 'subscribe') {
-        const { isFirst } = await checkSubscribeFirstTime(openId);
-        replyContent = isFirst ? buildWelcomeText('') : buildWelcomeText('欢迎回来！');
-      }
-    } 
-    
-    // --- 文本消息 ---
-    else if (message.MsgType === 'text' && typeof message.Content === 'string') {
+    if (message.MsgType === 'event' && message.Event === 'subscribe') {
+      replyContent =
+        `欢迎关注！这里是果粉实用工具箱\n\n` +
+        `你可以直接发送应用名称查询详情，或使用以下功能：\n\n` +
+        `› <a href="weixin://bizmsgmenu?msgmenucontent=榜单美国&msgmenuid=1">榜单查询</a> (查热门应用)\n\n` +
+        `› <a href="weixin://bizmsgmenu?msgmenucontent=价格YouTube&msgmenuid=2">价格查询</a> (查应用价格)\n\n` +
+        `› <a href="weixin://bizmsgmenu?msgmenucontent=系统更新&msgmenuid=3">系统更新</a> (iOS 固件)\n\n` +
+        `› <a href="weixin://bizmsgmenu?msgmenucontent=切换美国&msgmenuid=4">跨区切换</a> (免号看商店)\n\n` +
+        `› <a href="weixin://bizmsgmenu?msgmenucontent=图标微信&msgmenuid=5">图标获取</a> (高清源图)\n\n` +
+        `直接发送 "微信" 或 "查询微信" 试试看！`;
+    } else if (message.MsgType === 'text' && typeof message.Content === 'string') {
       const content = message.Content.trim();
       
-      if (/^myid$/i.test(content)) {
-        replyContent = `你的 OpenID：${openId}`;
-      } else {
-        // --- 正则定义 (修复了之前的匹配漏洞) ---
-        
-        // 1. 榜单查询 (格式：榜单美国)
-        const chartV2Match = content.match(/^榜单\s*(.+)$/i);
-        
-        // 2. 榜单详情 (格式：美国付费榜 / 日本免费榜)
-        // ⚡️ 关键修复：使用 .+? 配合 \s* 确保能正确抓取到前面的“日本”
-        const chartMatch = content.match(/^(.+?)\s*(免费榜|付费榜)$/i);
-        
-        // 3. 价格查询 (格式：价格 Minecraft 日本)
-        const priceMatchAdvanced = content.match(/^价格\s*(.+?)\s+([a-zA-Z\u4e00-\u9fa5]+)$/i);
-        // 4. 价格查询 (格式：价格 YouTube)
-        const priceMatchSimple = content.match(/^价格\s*(.+)$/i);
-        
-        // 5. 其他指令
-        const switchRegionMatch = content.match(/^(切换|地区)\s*([a-zA-Z\u4e00-\u9fa5]+)$/i);
-        const availabilityMatch = content.match(/^查询\s*(.+)$/i);
-        const osAllMatch = /^系统更新$/i.test(content);
-        const osUpdateMatch = content.match(/^(iOS|iPadOS|macOS|watchOS|tvOS|visionOS)$/i);
-        const iconMatch = content.match(/^图标\s*(.+)$/i);
+      // 正则匹配
+      const chartMatch = content.match(/^(.*?)(免费榜|付费榜)$/); 
+      const chartV2Match = content.match(/^榜单\s*(.+)$/i); 
+      
+      const priceMatchAdvanced = content.match(/^价格\s*(.+?)\s+([a-zA-Z\u4e00-\u9fa5]+)$/i); 
+      const priceMatchSimple = content.match(/^价格\s*(.+)$/i); 
+      
+      const switchRegionMatch = content.match(/^(切换|地区)\s*([a-zA-Z\u4e00-\u9fa5]+)$/i); 
+      
+      const osAllMatch = /^系统更新$/i.test(content);
+      const osUpdateMatch = content.match(/^(iOS|iPadOS|macOS|watchOS|tvOS|visionOS)$/i); 
+      
+      const iconMatch = content.match(/^图标\s*(.+)$/i); 
+      
+      const detailMatch = content.match(/^((查询|详情)\s*)?(.+)$/i); // 捕获所有文本，用于最后兜底
 
-        // --- 逻辑分发 ---
-        
-        if (chartV2Match && isSupportedRegion(chartV2Match[1].trim())) {
-          // 命中：榜单美国
-          const gate = await gateOrBypass(openId);
-          replyContent = gate.allowed
-            ? await Handlers.handleChartQuery(chartV2Match[1].trim(), '免费榜')
-            : gate.message;
-
-        } else if (chartMatch && isSupportedRegion(chartMatch[1].trim())) {
-          // 命中：日本付费榜
-          // 之前这里因为正则太弱，没抓到“日本”，现在修复了
-          const region = chartMatch[1].trim();
-          const type = chartMatch[2].trim();
-          
-          const gate = await gateOrBypass(openId);
-          replyContent = gate.allowed
-            ? await Handlers.handleChartQuery(region, type)
-            : gate.message;
-
-        } else if (priceMatchAdvanced && isSupportedRegion(priceMatchAdvanced[2])) {
-          // 命中：价格 Minecraft 日本
-          const gate = await gateOrBypass(openId);
-          replyContent = gate.allowed
-            ? await Handlers.handlePriceQuery(priceMatchAdvanced[1].trim(), priceMatchAdvanced[2].trim(), false)
-            : gate.message;
-
-        } else if (priceMatchSimple) {
-          // 命中：价格 YouTube
-          const gate = await gateOrBypass(openId);
-          if (!gate.allowed) {
-            replyContent = gate.message;
-          } else {
-            let queryAppName = priceMatchSimple[1].trim();
-            let targetRegion = '美国'; // 默认
-            let isDefaultSearch = true;
-            // 智能从尾部匹配地区
-            for (const countryName in ALL_SUPPORTED_REGIONS) {
-              if (queryAppName.endsWith(countryName) && queryAppName.length > countryName.length) {
-                targetRegion = countryName;
-                queryAppName = queryAppName.slice(0, -countryName.length).trim();
-                isDefaultSearch = false;
-                break;
-              }
-            }
-            replyContent = await Handlers.handlePriceQuery(queryAppName, targetRegion, isDefaultSearch);
+      // 1. 榜单
+      if (chartV2Match && isSupportedRegion(chartV2Match[1])) {
+        replyContent = await Handlers.handleChartQuery(chartV2Match[1].trim(), '免费榜');
+      } else if (chartMatch && isSupportedRegion(chartMatch[1])) {
+        replyContent = await Handlers.handleChartQuery(chartMatch[1].trim(), chartMatch[2]);
+      
+      // 2. 价格
+      } else if (priceMatchAdvanced && isSupportedRegion(priceMatchAdvanced[2])) {
+        replyContent = await Handlers.handlePriceQuery(priceMatchAdvanced[1].trim(), priceMatchAdvanced[2].trim(), false);
+      } else if (priceMatchSimple) {
+        let queryAppName = priceMatchSimple[1].trim();
+        let targetRegion = '美国';
+        let isDefaultSearch = true;
+        // 尝试从尾部提取地区
+        for (const countryName in ALL_SUPPORTED_REGIONS) {
+          if (queryAppName.endsWith(countryName) && queryAppName.length > countryName.length) {
+            targetRegion = countryName;
+            queryAppName = queryAppName.slice(0, -countryName.length).trim();
+            isDefaultSearch = false; 
+            break; 
           }
+        }
+        replyContent = await Handlers.handlePriceQuery(queryAppName, targetRegion, isDefaultSearch);
 
-        } else if (osAllMatch) {
-          const gate = await gateOrBypass(openId);
-          replyContent = gate.allowed ? await Handlers.handleSimpleAllOsUpdates() : gate.message;
+      // 3. 系统更新
+      } else if (osAllMatch) {
+        replyContent = await Handlers.handleSimpleAllOsUpdates();
+      } else if (osUpdateMatch) {
+        replyContent = await Handlers.handleDetailedOsUpdate(osUpdateMatch[1].trim());
 
-        } else if (osUpdateMatch) {
-          const gate = await gateOrBypass(openId);
-          replyContent = gate.allowed ? await Handlers.handleDetailedOsUpdate(osUpdateMatch[1].trim()) : gate.message;
+      // 4. 切换
+      } else if (switchRegionMatch && isSupportedRegion(switchRegionMatch[2])) {
+        replyContent = Handlers.handleRegionSwitch(switchRegionMatch[2].trim());
 
-        } else if (switchRegionMatch && isSupportedRegion(switchRegionMatch[2])) {
-          replyContent = Handlers.handleRegionSwitch(switchRegionMatch[2].trim());
+      // 5. 图标
+      } else if (iconMatch) {
+        replyContent = await Handlers.lookupAppIcon(iconMatch[1].trim());
 
-        } else if (availabilityMatch) {
-          const gate = await gateOrBypass(openId);
-          replyContent = gate.allowed ? await Handlers.handleAvailabilityQuery(availabilityMatch[1].trim()) : gate.message;
-
-        } else if (iconMatch) {
-          const appName = iconMatch[1].trim();
-          if (appName) {
-            const gate = await gateOrBypass(openId);
-            replyContent = gate.allowed ? await Handlers.lookupAppIcon(appName) : gate.message;
-          }
+      // 6. 详情 (兜底逻辑)
+      } else if (detailMatch) {
+        // 去掉可能的 "查询" 前缀，保留关键词
+        let keyword = content;
+        if (content.startsWith('查询') || content.startsWith('详情')) {
+             keyword = content.replace(/^(查询|详情)\s*/, '');
+        }
+        if (keyword) {
+            replyContent = await Handlers.handleAppDetails(keyword.trim());
         }
       }
     }
