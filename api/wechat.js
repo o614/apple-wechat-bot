@@ -17,6 +17,19 @@ async function gateOrBypass(openId) {
   return await checkAbuseGate(openId);
 }
 
+// 欢迎语构建函数 (确保在 wechat.js 中可用)
+function buildWelcomeText(prefixLine = '') {
+  const base =
+    `恭喜！你发现了果粉秘密基地\n\n` +
+    `› <a href="weixin://bizmsgmenu?msgmenucontent=付款方式&msgmenuid=付款方式">付款方式</a>\n获取注册地址信息\n\n` +
+    `› <a href="weixin://bizmsgmenu?msgmenucontent=查询TikTok&msgmenuid=1">查询TikTok</a>\n热门地区上架查询\n\n` +
+    `› <a href="weixin://bizmsgmenu?msgmenucontent=榜单美国&msgmenuid=3">榜单美国</a>\n全球免费付费榜单\n\n` +
+    `› <a href="weixin://bizmsgmenu?msgmenucontent=价格YouTube&msgmenuid=2">价格YouTube</a>\n应用价格优惠查询\n\n` +
+    `› <a href="weixin://bizmsgmenu?msgmenucontent=切换美国&msgmenuid=4">切换美国</a>\n应用商店随意切换\n\n` +
+    `› <a href="weixin://bizmsgmenu?msgmenucontent=图标QQ&msgmenuid=5">图标QQ</a>\n获取官方高清图标\n\n更多服务请戳底部菜单栏了解`;
+  return prefixLine ? `${prefixLine}\n\n${base}` : base;
+}
+
 // ==========================================
 // 🔑 钥匙扣定义 (Features)
 // ==========================================
@@ -24,6 +37,7 @@ const FEATURES = [
   {
     name: 'MyID',
     match: (c) => /^myid$/i.test(c),
+    needAuth: false,
     handler: async (match, openId) => `你的 OpenID：${openId}`
   },
   {
@@ -31,16 +45,15 @@ const FEATURES = [
     match: (c) => c.match(/^榜单\s*(.+)$/i),
     needAuth: true,
     handler: async (match) => {
-      if (!isSupportedRegion(match[1])) return null; // 地区不支持则不处理(或返回错误)
+      if (!isSupportedRegion(match[1])) return null;
       return Handlers.handleChartQuery(match[1].trim(), '免费榜');
     }
   },
   {
-    name: 'ChartDetail', // 榜单详情 (美国付费榜) - 使用你旧代码的正则逻辑
+    name: 'ChartDetail', // 榜单详情 (美国付费榜) - 使用你旧代码的好用逻辑
     match: (c) => c.match(/^(.*?)(免费榜|付费榜)$/),
     needAuth: true,
     handler: async (match) => {
-      // match[1] 是地区(如"日本"), match[2] 是类型
       if (!isSupportedRegion(match[1])) return null;
       return Handlers.handleChartQuery(match[1].trim(), match[2]);
     }
@@ -76,6 +89,7 @@ const FEATURES = [
   {
     name: 'SwitchRegion', // 切换地区
     match: (c) => c.match(/^(切换|地区)\s*([a-zA-Z\u4e00-\u9fa5]+)$/i),
+    needAuth: false,
     handler: async (match) => {
       if (!isSupportedRegion(match[2])) return null;
       return Handlers.handleRegionSwitch(match[2].trim());
@@ -104,6 +118,12 @@ const FEATURES = [
     match: (c) => c.match(/^图标\s*(.+)$/i),
     needAuth: true,
     handler: async (match) => Handlers.lookupAppIcon(match[1].trim())
+  },
+  {
+    name: 'Payment', // 付款方式 (静默)
+    match: (c) => c === '付款方式',
+    needAuth: false,
+    handler: async () => { return null; } // 返回 null 表示不回复
   }
 ];
 
@@ -125,7 +145,7 @@ async function handlePostRequest(req, res) {
     message = parsedXml.xml || {};
     const openId = message.FromUserName;
 
-    // 1. 关注事件
+    // 1. 关注事件 (修复: 明确处理 subscribe)
     if (message.MsgType === 'event' && message.Event === 'subscribe') {
       const { isFirst } = await checkSubscribeFirstTime(openId);
       replyContent = buildWelcomeText(isFirst ? '' : '欢迎回来！');
@@ -135,13 +155,12 @@ async function handlePostRequest(req, res) {
       const content = message.Content.trim();
       console.log(`[Msg] User: ${openId} | Content: "${content}"`);
 
-      // 🔄 遍历钥匙扣，找到匹配的功能
+      // 🔄 遍历钥匙扣
       for (const feature of FEATURES) {
         const match = feature.match(content);
         if (match) {
           console.log(`[Router] Matched: ${feature.name}`);
           
-          // 检查限额
           if (feature.needAuth) {
             const gate = await gateOrBypass(openId);
             if (!gate.allowed) {
@@ -150,10 +169,9 @@ async function handlePostRequest(req, res) {
             }
           }
           
-          // 执行功能
           try {
             const result = await feature.handler(match, openId);
-            if (result) { // 只有 handler 返回了有效内容才回复
+            if (result) { 
                replyContent = result;
                break; 
             }
@@ -203,16 +221,4 @@ function buildTextReply(toUser, fromUser, content) {
     Content: content
   };
   return builder.buildObject(payload);
-}
-
-function buildWelcomeText(prefixLine = '') {
-  const base =
-    `恭喜！你发现了果粉秘密基地\n\n` +
-    `› <a href="weixin://bizmsgmenu?msgmenucontent=付款方式&msgmenuid=付款方式">付款方式</a>\n获取注册地址信息\n\n` +
-    `› <a href="weixin://bizmsgmenu?msgmenucontent=查询TikTok&msgmenuid=1">查询TikTok</a>\n热门地区上架查询\n\n` +
-    `› <a href="weixin://bizmsgmenu?msgmenucontent=榜单美国&msgmenuid=3">榜单美国</a>\n全球免费付费榜单\n\n` +
-    `› <a href="weixin://bizmsgmenu?msgmenucontent=价格YouTube&msgmenuid=2">价格YouTube</a>\n应用价格优惠查询\n\n` +
-    `› <a href="weixin://bizmsgmenu?msgmenucontent=切换美国&msgmenuid=4">切换美国</a>\n应用商店随意切换\n\n` +
-    `› <a href="weixin://bizmsgmenu?msgmenucontent=图标QQ&msgmenuid=5">图标QQ</a>\n获取官方高清图标\n\n更多服务请戳底部菜单栏了解`;
-  return prefixLine ? `${prefixLine}\n\n${base}` : base;
 }
