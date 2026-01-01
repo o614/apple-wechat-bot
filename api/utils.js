@@ -2,15 +2,22 @@
 const axios = require('axios');
 const https = require('https');
 const { kv } = require('@vercel/kv');
-const { ALL_SUPPORTED_REGIONS } = require('./consts');
+const { ALL_SUPPORTED_REGIONS, DAILY_REQUEST_LIMIT, ADMIN_OPENID } = require('./consts');
 
 const SOURCE_NOTE = '*数据来源 Apple 官方*';
 
 const HTTP = axios.create({
-  timeout: 5000, 
+  timeout: 4000, 
   headers: { 'user-agent': 'Mozilla/5.0 (Serverless-WeChatBot)' }
 });
 
+// ----------------------
+// 核心增强功能
+// ----------------------
+
+/**
+ * 缓存包装器 (带自动写入)
+ */
 async function withCache(key, ttl, fetcher) {
   if (!process.env.KV_REST_API_TOKEN) {
     return await fetcher();
@@ -21,7 +28,9 @@ async function withCache(key, ttl, fetcher) {
   } catch (e) {
     console.warn('KV Get Error:', e.message);
   }
+
   const data = await fetcher();
+
   if (data) {
     try {
       await kv.set(key, data, { ex: ttl });
@@ -31,6 +40,56 @@ async function withCache(key, ttl, fetcher) {
   }
   return data;
 }
+
+/**
+ * [新增] 检查 URL 是否有效 (HEAD 请求)
+ * 用于确认 1024x1024 图片是否存在
+ */
+async function checkUrlAccessibility(url) {
+  try {
+    await HTTP.head(url, { timeout: 1500 }); // 1.5秒超时，速战速决
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * [新增] 用户限流检查
+ * 返回 true 表示通过，false 表示被限制
+ */
+async function checkUserRateLimit(openid) {
+  // 1. 如果没有配置 KV，或者用户是管理员，直接放行
+  if (!process.env.KV_REST_API_TOKEN || openid === ADMIN_OPENID) {
+    return true; 
+  }
+
+  const key = `limit:req:${openid}`; // Key 例如: limit:req:o4UNG...
+  const oneDaySeconds = 86400;
+
+  try {
+    // 计数器 +1
+    const currentCount = await kv.incr(key);
+    
+    // 如果是第一次计数 (currentCount === 1)，设置过期时间为 24 小时
+    if (currentCount === 1) {
+      await kv.expire(key, oneDaySeconds);
+    }
+
+    // 检查是否超限
+    if (currentCount > DAILY_REQUEST_LIMIT) {
+      return false;
+    }
+    return true;
+  } catch (e) {
+    console.error('Rate Limit Error:', e);
+    return true; // 如果 KV 挂了，降级为允许访问，不阻断业务
+  }
+}
+
+// ----------------------
+// 基础工具
+// ----------------------
 
 function formatBytes(bytes) {
   if (bytes === 0) return '0 B';
@@ -67,7 +126,7 @@ function getFormattedTime() {
   return `${yyyy.slice(-2)}/${mm}/${dd} ${hh}:${mi}`;
 }
 
-function getJSON(url) {
+async function getJSON(url) {
   return HTTP.get(url).then(res => res.data);
 }
 
@@ -90,7 +149,7 @@ async function fetchExchangeRate(targetCurrencyCode) {
   if (!targetCurrencyCode || targetCurrencyCode.toUpperCase() === 'CNY') return null;
   try {
     const url = `https://api.frankfurter.app/latest?from=${targetCurrencyCode.toUpperCase()}&to=CNY`;
-    const { data } = await axios.get(url, { timeout: 3000 });
+    const { data } = await axios.get(url, { timeout: 2500 });
     return data?.rates?.CNY || null;
   } catch (e) {
     return null;
@@ -99,13 +158,14 @@ async function fetchExchangeRate(targetCurrencyCode) {
 
 async function fetchGdmf() {
   const url = 'https://gdmf.apple.com/v2/pmv';
-  const headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-    'Accept': 'application/json'
-  };
+  const headers = { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' };
   const agent = new https.Agent({ rejectUnauthorized: false });
   try {
     const response = await HTTP.get(url, { headers, httpsAgent: agent });
+    // [防御性编程] 简单的结构检查
+    if (!response.data || typeof response.data !== 'object') {
+        throw new Error('Invalid GDMF data');
+    }
     return response.data;
   } catch (error) {
     throw new Error('fetchGdmf Error');
@@ -131,7 +191,6 @@ function toBeijingYMD(s) {
   return `${y}-${m}-${d2}`;
 }
 
-// 新增：短日期格式 25/12/17
 function toBeijingShortDate(s) {
   if (!s) return '';
   const d = new Date(s); if (isNaN(d)) return '';
@@ -146,8 +205,11 @@ function collectReleases(data, platform) {
   const releases = [];
   const targetOS = normalizePlatform(platform);
   if (!targetOS || !data) return releases;
+  
+  // [防御性编程] 使用可选链 ?. 防止崩溃
   const assetSetNames = ['PublicAssetSets', 'AssetSets'];
   const foundBuilds = new Set();
+
   for (const setName of assetSetNames) {
     const assetSet = data[setName];
     if (assetSet && typeof assetSet === 'object') {
@@ -156,20 +218,21 @@ function collectReleases(data, platform) {
           if (platformArray && Array.isArray(platformArray)) {
               platformArray.forEach(node => {
                   if (node && typeof node === 'object') {
-                      const version = node.ProductVersion || node.OSVersion || node.SystemVersion || null;
-                      const build = node.Build || node.BuildID || node.BuildVersion || null;
-                      const dateStr = node.PostingDate || node.ReleaseDate || node.Date || null;
+                      const version = node.ProductVersion || node.OSVersion || node.SystemVersion;
+                      const build = node.Build || node.BuildID || node.BuildVersion;
+                      const dateStr = node.PostingDate || node.ReleaseDate || node.Date;
                       const devices = node.SupportedDevices;
+
                       if (version && build && !foundBuilds.has(build)) {
                           const actualPlatforms = determinePlatformsFromDevices(devices);
                           if (actualPlatforms.has(targetOS)) {
                               releases.push({ os: targetOS, version, build, date: dateStr, raw: node });
                               foundBuilds.add(build);
                           } else if (targetOS === 'iPadOS' && actualPlatforms.has('iOS')) {
-                              if (parseFloat(version) >= 13.0) {
+                             if (parseFloat(version) >= 13.0) {
                                   releases.push({ os: targetOS, version, build, date: dateStr, raw: node });
                                   foundBuilds.add(build);
-                              }
+                             }
                           }
                       }
                   }
@@ -199,5 +262,6 @@ function determinePlatformsFromDevices(devices) {
 module.exports = {
   HTTP, SOURCE_NOTE, withCache, formatBytes, getCountryCode, isSupportedRegion,
   getFormattedTime, getJSON, pickBestMatch, formatPrice, fetchExchangeRate, fetchGdmf,
-  normalizePlatform, toBeijingYMD, toBeijingShortDate, collectReleases
+  normalizePlatform, toBeijingYMD, toBeijingShortDate, collectReleases, 
+  checkUrlAccessibility, checkUserRateLimit
 };
