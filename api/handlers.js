@@ -7,7 +7,7 @@ const {
 } = require('./utils');
 
 const { DSF_MAP, BLOCKED_APP_IDS, ADMIN_OPENID, DAILY_REQUEST_LIMIT } = require('./consts');
-const { kv } = require('@vercel/kv'); // 用于管理后台查询
+const { kv } = require('@vercel/kv'); 
 
 const CACHE_TTL_SHORT = 600; 
 const CACHE_TTL_LONG = 1800; 
@@ -42,7 +42,7 @@ async function handleChartQuery(regionName, chartType) {
         return appUrl ? `${idx + 1}、<a href="${appUrl}">${appName}</a>` : `${idx + 1}、${appName}`;
       }).join('\n');
 
-      // 修复：强制使用 code 生成按钮指令
+      // 【核心修复】强制使用代码 (如 jp) 生成按钮，配合 Consts 中的双向映射
       const toggleCmd = chartType === '免费榜' ? `${regionCode}付费榜` : `${regionCode}免费榜`;
       resultText += `\n› <a href="weixin://bizmsgmenu?msgmenucontent=${encodeURIComponent(toggleCmd)}&msgmenuid=chart_toggle">查看${chartType === '免费榜' ? '付费' : '免费'}榜单</a>`;
       resultText += `\n\n${SOURCE_NOTE}`;
@@ -105,7 +105,7 @@ function handleRegionSwitch(regionName) {
   return `注意！仅浏览，需账号才能下载。\n\n<a href="${fullUrl}">› 点击切换至【${regionName}】 App Store</a>\n\n› 点此切换至 <a href="${cnUrl}">【大陆】</a> App Store\n\n*出现“无法连接”后将自动跳转*`;
 }
 
-// 4. 图标查询 (含防404优化)
+// 4. 图标查询 (含防404)
 async function lookupAppIcon(appName) {
   const cacheKey = `wx:icon:us:${appName.toLowerCase().replace(/\s/g, '')}`;
   return await withCache(cacheKey, CACHE_TTL_SHORT, async () => {
@@ -116,16 +116,12 @@ async function lookupAppIcon(appName) {
 
       const app = data.results[0];
       const standardIcon = app.artworkUrl512 || app.artworkUrl100;
-      
-      // 尝试获取高清图链接
       const highRes = String(app.artworkUrl100 || '').replace('100x100bb.jpg', '1024x1024bb.jpg');
       
       let finalIcon = standardIcon;
-
-      // 【防404优化】如果推测出的高清图链接和原图不同，先检测一下存不存在
+      // 智能降级：如果猜测的高清图不存在，则回退到原图
       if (highRes && highRes !== app.artworkUrl100) {
-        const isHighResAvailable = await checkUrlAccessibility(highRes);
-        if (isHighResAvailable) {
+        if (await checkUrlAccessibility(highRes)) {
           finalIcon = highRes;
         }
       }
@@ -198,7 +194,7 @@ async function handleDetailedOsUpdate(inputPlatform = 'iOS') {
   });
 }
 
-// 6. 应用详情
+// 6. 应用详情 (极简UI)
 async function handleAppDetails(appName) {
   const code = 'us';
   const cacheKey = `wx:detail:us:${appName.toLowerCase().replace(/\s/g, '')}`;
@@ -234,13 +230,11 @@ async function handleAppDetails(appName) {
   });
 }
 
-// [新增] 7. 管理员后台状态
+// 7. 管理后台状态
 async function handleAdminStatus(fromUser) {
-  if (fromUser !== ADMIN_OPENID) return ''; // 闲人免进
+  if (fromUser !== ADMIN_OPENID) return ''; 
 
   try {
-    // 简单的统计 (注意: dbsize 可能在 Vercel KV 免费版有限制，但通常可用)
-    // 这里我们只做简单的连通性检查和返回
     const dbSize = await kv.dbsize(); 
     return `【后台管理系统】\n\n状态：运行中\n缓存Key数量：${dbSize}\n每日限额：${DAILY_REQUEST_LIMIT}次/人\n\n系统时间：${getFormattedTime()}`;
   } catch (e) {
@@ -249,12 +243,6 @@ async function handleAdminStatus(fromUser) {
 }
 
 module.exports = {
-  handleChartQuery,
-  handlePriceQuery,
-  handleRegionSwitch,
-  lookupAppIcon,
-  handleSimpleAllOsUpdates,
-  handleDetailedOsUpdate,
-  handleAppDetails,
-  handleAdminStatus
+  handleChartQuery, handlePriceQuery, handleRegionSwitch, lookupAppIcon,
+  handleSimpleAllOsUpdates, handleDetailedOsUpdate, handleAppDetails, handleAdminStatus
 };
