@@ -39,7 +39,7 @@ async function checkUrlAccessibility(url) {
 
 // 用户限流检查
 async function checkUserRateLimit(openid) {
-  // 无 KV 或管理员,直接放行
+  // 无 KV 或管理员，直接放行
   if (!process.env.KV_REST_API_TOKEN || openid === ADMIN_OPENID) return true;
 
   const key = `limit:req:${openid}`;
@@ -64,21 +64,11 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-// 【核心修复】获取地区代码 (支持中文名和代码)
+// 【极简稳健版】获取地区代码
+// 不再使用正则猜测，直接查双向字典
 function getCountryCode(identifier) {
   const cleanKey = String(identifier || '').trim().toLowerCase();
   return ALL_SUPPORTED_REGIONS[cleanKey] || '';
-}
-
-// 【新增】根据代码获取中文名称
-function getCountryName(code) {
-  // 从 ALL_SUPPORTED_REGIONS 中反向查找中文名
-  for (const [name, c] of Object.entries(ALL_SUPPORTED_REGIONS)) {
-    if (c === code && name.length > 2) { // 长度>2说明是中文名,不是代码
-      return name;
-    }
-  }
-  return code; // 找不到就返回代码本身
 }
 
 function isSupportedRegion(identifier) {
@@ -221,7 +211,7 @@ function determinePlatformsFromDevices(devices) {
 }
 
 module.exports = {
-  HTTP, SOURCE_NOTE, withCache, formatBytes, getCountryCode, getCountryName, isSupportedRegion,
+  HTTP, SOURCE_NOTE, withCache, formatBytes, getCountryCode, isSupportedRegion,
   getFormattedTime, getJSON, pickBestMatch, formatPrice, fetchExchangeRate, fetchGdmf,
   normalizePlatform, toBeijingYMD, toBeijingShortDate, collectReleases, 
   checkUrlAccessibility, checkUserRateLimit
