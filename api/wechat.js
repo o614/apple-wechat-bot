@@ -2,7 +2,7 @@
 const crypto = require('crypto');
 const { Parser, Builder } = require('xml2js');
 const { ALL_SUPPORTED_REGIONS } = require('./consts');
-// 【修复】引入 checkSubscribeFirstTime
+// 确保正确引入
 const { isSupportedRegion, checkUserRateLimit, checkSubscribeFirstTime } = require('./utils');
 const Handlers = require('./handlers');
 
@@ -10,7 +10,6 @@ const WECHAT_TOKEN = process.env.WECHAT_TOKEN;
 const parser = new Parser({ explicitArray: false, trim: true });
 const builder = new Builder({ cdata: true, rootName: 'xml', headless: true });
 
-// 欢迎语
 function buildWelcomeText(prefixLine = '') {
   const base =
     `恭喜！你发现了果粉秘密基地\n\n` +
@@ -23,13 +22,18 @@ function buildWelcomeText(prefixLine = '') {
   return prefixLine ? `${prefixLine}\n\n${base}` : base;
 }
 
-// 钥匙扣 (Features)
 const FEATURES = [
   {
     name: 'Admin', // 管理后台
     match: (c) => /^管理后台|后台数据$/i.test(c),
-    needAuth: false, // 内部单独鉴权
+    needAuth: false, 
     handler: async (match, openId) => Handlers.handleAdminStatus(openId)
+  },
+  {
+    name: 'MyID', // 【加回】MyID 功能
+    match: (c) => /^myid$/i.test(c),
+    needAuth: false,
+    handler: async (match, openId) => `你的 OpenID：${openId}`
   },
   {
     name: 'ChartSimple',
@@ -93,7 +97,7 @@ const FEATURES = [
     handler: async (match) => Handlers.handleAppDetails(match[1].trim())
   },
   {
-    name: 'AppQueryMenu', // 菜单引导
+    name: 'AppQueryMenu',
     match: (c) => c === '应用查询',
     needAuth: false,
     handler: async () => '请回复“查询+应用名称”，例如：\n\n查询微信\n查询TikTok\n查询小红书'
@@ -134,9 +138,7 @@ module.exports = async (req, res) => {
 
     try {
       const result = await Promise.race([task, timeout]);
-      if (result === 'TIMEOUT') {
-        return res.status(200).send(''); 
-      }
+      if (result === 'TIMEOUT') return res.status(200).send(''); 
       return result; 
     } catch (e) {
       console.error('Main Handler Error:', e);
@@ -155,16 +157,13 @@ async function handlePostRequest(req, res) {
     message = parsedXml.xml || {};
     const openId = message.FromUserName;
 
-    // 1. 关注事件
     if (message.MsgType === 'event' && message.Event === 'subscribe') {
       const { isFirst } = await checkSubscribeFirstTime(openId);
       replyContent = buildWelcomeText(isFirst ? '' : '欢迎回来！');
     }
-    // 2. 文本消息
     else if (message.MsgType === 'text' && typeof message.Content === 'string') {
       const content = message.Content.trim();
       
-      // 遍历钥匙扣
       for (const feature of FEATURES) {
         const match = feature.match(content);
         if (match) {
