@@ -7,23 +7,21 @@ const {
 
 const { DSF_MAP, BLOCKED_APP_IDS, TARGET_COUNTRIES_FOR_AVAILABILITY } = require('./consts');
 
-// ==========================================
-// 1. 榜单查询 (使用 MarketingTools 新接口)
-// ==========================================
+// 1. 榜单查询 (修复版: 使用新接口)
 async function handleChartQuery(regionName, chartType) {
   const regionCode = getCountryCode(regionName);
   if (!regionCode) return '不支持的地区或格式错误。';
 
-  // ⚠️ 核心修正：使用旧版代码里的正确逻辑
   const type = chartType === '免费榜' ? 'top-free' : 'top-paid';
+  // ✅ 这里是关键：使用营销工具接口
   const url = `https://rss.marketingtools.apple.com/api/v2/${regionCode}/apps/${type}/10/apps.json`;
 
   try {
     const data = await getJSON(url);
-    // ⚠️ 数据结构也不一样，这里要适配新接口
+    // ✅ 这里是关键：新接口的数据结构
     const apps = (data && data.feed && data.feed.results) || [];
     
-    if (!apps.length) return '获取榜单失败，请稍后再试。';
+    if (!apps.length) return '获取榜单失败，可能 Apple 接口暂时繁忙。';
 
     let resultText = `${regionName}${chartType}\n${getFormattedTime()}\n\n`;
 
@@ -46,13 +44,10 @@ async function handleChartQuery(regionName, chartType) {
   }
 }
 
-// ==========================================
-// 2. 价格查询 (保持逻辑不变)
-// ==========================================
+// 2. 价格查询
 async function handlePriceQuery(appName, regionName, isDefaultSearch) {
   const code = getCountryCode(regionName);
   if (!code) return `不支持的地区或格式错误：${regionName}`;
-
   const url = `https://itunes.apple.com/search?term=${encodeURIComponent(appName)}&entity=software&country=${code}&limit=5`;
   try {
     const data = await getJSON(url);
@@ -62,48 +57,43 @@ async function handlePriceQuery(appName, regionName, isDefaultSearch) {
     const best = pickBestMatch(appName, results);
     const link = `<a href="${best.trackViewUrl}">${best.trackName}</a>`;
     const priceText = formatPrice(best);
-
-    let replyText = `您搜索的“${appName}”最匹配的结果是：\n\n${link}\n\n地区：${regionName}\n价格：${priceText}\n时间：${getFormattedTime()}`;
+    let replyText = `您搜索的“${appName}”最匹配的结果是：\n\n${link}\n\n地区：${regionName}\n价格：${priceText}`;
+    if (typeof best.price === 'number' && best.price > 0 && best.currency) {
+      const rate = await fetchExchangeRate(best.currency);
+      if (rate) {
+        const cnyPrice = (best.price * rate).toFixed(2);
+        replyText += ` (≈ ¥${cnyPrice})`;
+      }
+    }
+    replyText += `\n时间：${getFormattedTime()}`;
     if (isDefaultSearch) replyText += `\n\n想查其他地区？试试发送：\n价格 ${appName} 日本`;
     return replyText + `\n\n${SOURCE_NOTE}`;
   } catch (e) {
-    console.error('Price Query Error:', e);
     return '查询价格失败，请稍后再试。';
   }
 }
 
-// ==========================================
 // 3. 商店切换
-// ==========================================
 function handleRegionSwitch(regionName) {
   const regionCode = getCountryCode(regionName);
   const dsf = DSF_MAP[regionCode];
   if (!regionCode || !dsf) return '不支持的地区或格式错误。';
-
   const stableAppId = '375380948';
   const redirect = `/WebObjects/MZStore.woa/wa/viewSoftware?mt=8&id=${stableAppId}`;
   const fullUrl = `https://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${dsf}&cc=${regionCode}&url=${encodeURIComponent(redirect)}`;
-
   const cnCode = 'cn';
   const cnDsf = DSF_MAP[cnCode];
   const cnUrl = `https://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${cnDsf}&cc=${cnCode}&url=${encodeURIComponent(redirect)}`;
-
   return `注意！仅浏览，需账号才能下载。\n\n<a href="${fullUrl}">› 点击切换至【${regionName}】 App Store</a>\n\n› 点此切换至 <a href="${cnUrl}">【大陆】</a> App Store\n\n*出现“无法连接”后将自动跳转*`;
 }
 
-// ==========================================
 // 4. 上架查询
-// ==========================================
 async function handleAvailabilityQuery(appName) {
   const appInfo = await findAppUniversalId(appName);
-  if (!appInfo) {
-    return `未能在主要地区（美国、中国）的应用商店中找到「${appName}」，请检查应用名称是否正确。`;
-  }
+  if (!appInfo) return `未能在主要地区（美国、中国）的应用商店中找到「${appName}」，请检查应用名称是否正确。`;
   const availableCountries = await checkAvailability(appInfo.trackId);
   let replyText = `您查询的“${appName}”最匹配的结果是：\n\n${appInfo.trackName}\n\n`;
-  replyText += availableCountries.length
-    ? `可下载地区：\n${availableCountries.join(', ')}`
-    : `在我们查询的热门地区中，均未发现此应用上架。`;
+  replyText += availableCountries.length ? `可下载地区：\n${availableCountries.join(', ')}` : `在我们查询的热门地区中，均未发现此应用上架。`;
   return replyText + `\n\n${SOURCE_NOTE}`;
 }
 
@@ -115,13 +105,8 @@ async function findAppUniversalId(appName) {
   for (const url of endpoints) {
     try {
       const data = await getJSON(url, { timeout: 4000 });
-      if (data.resultCount > 0) {
-        const app = data.results[0];
-        return { trackId: app.trackId, trackName: app.trackName, trackViewUrl: app.trackViewUrl };
-      }
-    } catch (e) {
-      console.warn('Warning: search error:', e.message || e);
-    }
+      if (data.resultCount > 0) return data.results[0];
+    } catch (e) {}
   }
   return null;
 }
@@ -133,41 +118,33 @@ async function checkAvailability(trackId) {
   const settled = await Promise.allSettled(promises);
   const available = [];
   settled.forEach((r, i) => {
-    if (r.status === 'fulfilled' && r.value && r.value.resultCount > 0) {
-      available.push(TARGET_COUNTRIES_FOR_AVAILABILITY[i].name);
-    }
+    if (r.status === 'fulfilled' && r.value && r.value.resultCount > 0) available.push(TARGET_COUNTRIES_FOR_AVAILABILITY[i].name);
   });
   return available;
 }
 
-// ==========================================
 // 5. 图标查询
-// ==========================================
 async function lookupAppIcon(appName) {
   try {
     const url = `https://itunes.apple.com/search?term=${encodeURIComponent(appName)}&country=us&entity=software&limit=1`;
     const data = await getJSON(url, { timeout: 8000 });
     if (data.resultCount === 0) return '未找到相关应用，请检查名称。';
-
     const app = data.results[0];
     const highRes = String(app.artworkUrl100 || '').replace('100x100bb.jpg', '1024x1024bb.jpg');
+    let finalIcon = highRes;
+    let desc = '高清图标链接';
     if (!highRes || highRes === app.artworkUrl100) {
-        const fallbackRes = app.artworkUrl512 || app.artworkUrl100;
-        if (!fallbackRes) return '抱歉，未能获取到该应用的高清图标。';
-        const appLink = `<a href="${app.trackViewUrl}">${app.trackName}</a>`;
-        return `您搜索的“${appName}”最匹配的结果是：\n\n${appLink}\n\n这是它的图标链接：\n${fallbackRes}\n\n${SOURCE_NOTE}`;
+        finalIcon = app.artworkUrl512 || app.artworkUrl100;
+        desc = '图标链接';
     }
     const appLink = `<a href="${app.trackViewUrl}">${app.trackName}</a>`;
-    return `您搜索的“${appName}”最匹配的结果是：\n\n${appLink}\n\n这是它的高清图标链接：\n${highRes}\n\n${SOURCE_NOTE}`;
+    return `您搜索的“${appName}”最匹配的结果是：\n\n${appLink}\n\n这是它的${desc}：\n${finalIcon}\n\n${SOURCE_NOTE}`;
   } catch (e) {
-    console.error('Error in lookupAppIcon:', e.message || e);
     return '查询应用图标失败，请稍后再试。';
   }
 }
 
-// ==========================================
 // 6. 系统更新
-// ==========================================
 async function handleSimpleAllOsUpdates() {
   try {
     const data = await fetchGdmf();
@@ -181,10 +158,8 @@ async function handleSimpleAllOsUpdates() {
       }
     }
     if (!results.length) return '暂未获取到系统版本信息，请稍后再试。';
-
     return `最新系统版本：\n\n${results.join('\n')}\n\n如需查看详细版本，请发送：\n更新 iOS、更新 macOS、更新 watchOS...\n\n*数据来源 Apple 官方*`;
   } catch (e) {
-    console.error('Error in handleSimpleAllOsUpdates:', e.message || e);
     return '查询系统版本失败，请稍后再试。';
   }
 }
@@ -195,37 +170,26 @@ async function handleDetailedOsUpdate(inputPlatform = 'iOS') {
     const data = await fetchGdmf();
     const list = collectReleases(data, platform);
     if (!list.length) return `${platform} 暂无版本信息。`;
-
     list.sort((a,b)=>{
       const da = new Date(a.date||0), db = new Date(b.date||0);
       if (db - da !== 0) return db - da;
       return b.version.localeCompare(a.version,undefined,{numeric:true});
     });
-
     const latest = list[0];
     const stableTag = /beta|rc|seed/i.test(JSON.stringify(latest.raw)) ? '' : ' — 正式版';
     const latestDateStr = toBeijingYMD(latest.date) || '未知日期';
-
     const lines = list.slice(0,5).map(r=>{
       const t = toBeijingYMD(r.date);
-      const releaseTag = /beta/i.test(JSON.stringify(r.raw)) ? ' (Beta)' :
-                         /rc|seed/i.test(JSON.stringify(r.raw)) ? ' (RC)' : '';
+      const releaseTag = /beta/i.test(JSON.stringify(r.raw)) ? ' (Beta)' : /rc|seed/i.test(JSON.stringify(r.raw)) ? ' (RC)' : '';
       return `• ${r.os} ${r.version} (${r.build})${releaseTag}${t?` — ${t}`:''}`;
     });
-
     return `${platform} 最新公开版本：\n版本：${latest.version}（${latest.build}）${stableTag}\n发布时间：${latestDateStr}\n\n近期版本：\n${lines.join('\n')}\n\n查询时间：${getFormattedTime()}\n\n${SOURCE_NOTE}`;
   } catch (e) {
-    console.error('Error in handleDetailedOsUpdate:', e.message || e);
     return '查询系统版本失败，请稍后再试。';
   }
 }
 
 module.exports = {
-  handleChartQuery,
-  handlePriceQuery,
-  handleRegionSwitch,
-  handleAvailabilityQuery,
-  lookupAppIcon,
-  handleSimpleAllOsUpdates,
-  handleDetailedOsUpdate
+  handleChartQuery, handlePriceQuery, handleRegionSwitch, handleAvailabilityQuery,
+  lookupAppIcon, handleSimpleAllOsUpdates, handleDetailedOsUpdate
 };
