@@ -2,7 +2,6 @@
 const crypto = require('crypto');
 const { Parser, Builder } = require('xml2js');
 const { ALL_SUPPORTED_REGIONS } = require('./consts');
-// 确保正确引入
 const { isSupportedRegion, checkUserRateLimit, checkSubscribeFirstTime } = require('./utils');
 const Handlers = require('./handlers');
 
@@ -24,9 +23,9 @@ function buildWelcomeText(prefixLine = '') {
 
 const FEATURES = [
   {
-    name: 'Admin', // 管理后台
+    name: 'Admin',
     match: (c) => /^管理后台|后台数据$/i.test(c),
-    needAuth: false, 
+    needAuth: false,
     handler: async (match, openId) => Handlers.handleAdminStatus(openId)
   },
   {
@@ -157,13 +156,16 @@ async function handlePostRequest(req, res) {
     message = parsedXml.xml || {};
     const openId = message.FromUserName;
 
+    // 1. 关注事件
     if (message.MsgType === 'event' && message.Event === 'subscribe') {
       const { isFirst } = await checkSubscribeFirstTime(openId);
       replyContent = buildWelcomeText(isFirst ? '' : '欢迎回来！');
     }
+    // 2. 文本消息
     else if (message.MsgType === 'text' && typeof message.Content === 'string') {
       const content = message.Content.trim();
       
+      // 遍历钥匙扣
       for (const feature of FEATURES) {
         const match = feature.match(content);
         if (match) {
