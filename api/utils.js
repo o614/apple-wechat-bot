@@ -49,7 +49,6 @@ async function checkUserRateLimit(openid) {
   } catch (e) { return true; }
 }
 
-// 【关键修复】这里必须定义并导出这个函数
 async function checkSubscribeFirstTime(openId) {
   if (!process.env.KV_REST_API_TOKEN || !kv || !openId) return { isFirst: true };
   const key = `sub:seen:${openId}`;
@@ -75,22 +74,26 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-// 【关键修复】恢复为遍历查找模式，以支持 "jp" 输入
-// 因为 consts.js 去掉了自动映射，这里必须遍历 value
+// 【获取代码】支持中文或代码输入 (遍历查找)
 function getCountryCode(identifier) {
-  const trimmed = String(identifier || '').trim();
-  const key = trimmed.toLowerCase();
-  
+  const trimmed = String(identifier || '').trim().toLowerCase();
   // 1. 直接查中文
   if (ALL_SUPPORTED_REGIONS[trimmed]) return ALL_SUPPORTED_REGIONS[trimmed];
-  
-  // 2. 查不到中文，如果是2位代码，遍历查找
-  if (/^[a-z]{2}$/i.test(key)) {
+  // 2. 查不到中文，如果是代码，反向遍历确认是否有效
+  if (/^[a-z]{2}$/i.test(trimmed)) {
     for (const name in ALL_SUPPORTED_REGIONS) {
-      if (ALL_SUPPORTED_REGIONS[name] === key) return key;
+      if (ALL_SUPPORTED_REGIONS[name] === trimmed) return trimmed;
     }
   }
   return '';
+}
+
+// 【新增：获取中文名】把 'jp' 翻译回 '日本' 用于显示
+function getCountryName(code) {
+  for (const [name, c] of Object.entries(ALL_SUPPORTED_REGIONS)) {
+    if (c === code) return name;
+  }
+  return code; // 找不到就原样返回
 }
 
 function isSupportedRegion(identifier) { return !!getCountryCode(identifier); }
@@ -234,7 +237,7 @@ function determinePlatformsFromDevices(devices) {
 }
 
 module.exports = {
-  HTTP, SOURCE_NOTE, withCache, formatBytes, getCountryCode, isSupportedRegion,
+  HTTP, SOURCE_NOTE, withCache, formatBytes, getCountryCode, getCountryName, isSupportedRegion,
   getFormattedTime, getJSON, pickBestMatch, formatPrice, fetchExchangeRate, fetchGdmf,
   normalizePlatform, toBeijingYMD, toBeijingShortDate, collectReleases, 
   checkUrlAccessibility, checkUserRateLimit, checkSubscribeFirstTime 
