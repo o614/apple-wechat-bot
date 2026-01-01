@@ -13,7 +13,7 @@ const parser = new Parser({ explicitArray: false, trim: true });
 const builder = new Builder({ cdata: true, rootName: 'xml', headless: true });
 
 const HTTP = axios.create({
-  timeout: 6000, 
+  timeout: 4000, 
   headers: { 'user-agent': 'Mozilla/5.0 (Serverless-WeChatBot)' }
 });
 
@@ -298,7 +298,7 @@ function handleRegionSwitch(regionName) {
   const cnDsf = DSF_MAP[cnCode];
   const cnUrl = `https://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${cnDsf}&cc=${cnCode}&url=${encodeURIComponent(redirect)}`;
 
-  return `注意！仅浏览，需账号才能下载。\n\n<a href="${fullUrl}">› 点击切换至【${regionName}】 App Store</a>\n\n› 点此切换至 <a href="${cnUrl}">【大陆】</a> App Store\n\n*出现“无法连接”后将自动跳转*`;
+  return `注意！仅浏览，需账号才能下载。\n\n<a href="${fullUrl}">› 点击切换至【${regionName}】 App Store</a>\n\n› 点此切换至 <a href="${cnUrl}">【大陆】</a> App Store\n\n*出现“无法连接”后将自动跳转*\n\n*目前不支持 iOS 26 及以上系统*`;
 }
 
 async function handleAvailabilityQuery(appName) {
@@ -379,7 +379,7 @@ async function fetchGdmf() {
   };
   const agent = new https.Agent({ rejectUnauthorized: false });
   try {
-    const response = await HTTP.get(url, { timeout: 15000, headers: headers, httpsAgent: agent });
+    const response = await HTTP.get(url, { timeout: 4000, headers: headers, httpsAgent: agent });
     if (!response.data || typeof response.data !== 'object') {
         console.error('fetchGdmf Error: Received invalid data format from GDMF.');
         throw new Error('Received invalid data format from GDMF.');
@@ -557,4 +557,3 @@ function determinePlatformsFromDevices(devices) {
 
     return platforms;
 }
-
