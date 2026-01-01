@@ -1,6 +1,6 @@
 // api/handlers.js
 const { 
-  getCountryCode, getJSON, getFormattedTime, SOURCE_NOTE, 
+  getCountryCode, getCountryName, getJSON, getFormattedTime, SOURCE_NOTE, 
   pickBestMatch, formatPrice, fetchExchangeRate, 
   fetchGdmf, collectReleases, normalizePlatform, toBeijingYMD,
   checkUrlAccessibility, toBeijingShortDate, formatBytes, withCache
@@ -15,9 +15,13 @@ const CACHE_TTL_SHORT = 600;
 const CACHE_TTL_LONG = 1800; 
 
 // 1. 榜单查询
-async function handleChartQuery(regionName, chartType) {
-  const regionCode = getCountryCode(regionName);
+async function handleChartQuery(regionInput, chartType) {
+  // 先获取代码用于API查询
+  const regionCode = getCountryCode(regionInput);
   if (!regionCode) return '不支持的地区或格式错误。';
+
+  // 【修复】获取中文名称用于显示 (把 'jp' 变回 '日本')
+  const displayName = getCountryName(regionCode);
 
   const cacheKey = `wx:chart:${regionCode}:${chartType === '免费榜' ? 'free' : 'paid'}`;
 
@@ -28,9 +32,12 @@ async function handleChartQuery(regionName, chartType) {
     try {
       const data = await getJSON(url);
       const apps = (data && data.feed && data.feed.results) || [];
+      
       if (!apps.length) return '获取榜单失败，可能 Apple 接口暂时繁忙。';
 
-      let resultText = `${regionName}${chartType}\n${getFormattedTime()}\n\n`;
+      // 标题使用中文名
+      let resultText = `${displayName}${chartType}\n${getFormattedTime()}\n\n`;
+
       resultText += apps.map((app, idx) => {
         const appId = String(app.id || '');
         const appName = app.name || '未知应用';
@@ -39,7 +46,8 @@ async function handleChartQuery(regionName, chartType) {
         return appUrl ? `${idx + 1}、<a href="${appUrl}">${appName}</a>` : `${idx + 1}、${appName}`;
       }).join('\n');
 
-      const toggleCmd = chartType === '免费榜' ? `${regionName}付费榜` : `${regionName}免费榜`;
+      // 按钮依然使用 Code (jp) 保证稳定性
+      const toggleCmd = chartType === '免费榜' ? `${regionCode}付费榜` : `${regionCode}免费榜`;
       resultText += `\n› <a href="weixin://bizmsgmenu?msgmenucontent=${encodeURIComponent(toggleCmd)}&msgmenuid=chart_toggle">查看${chartType === '免费榜' ? '付费' : '免费'}榜单</a>`;
       resultText += `\n\n${SOURCE_NOTE}`;
       return resultText;
@@ -162,7 +170,7 @@ async function lookupAppIcon(appName) {
   });
 }
 
-// 6. 系统更新 (【加回】超链接)
+// 6. 系统更新 (【加回】超链接 & 时间)
 async function handleSimpleAllOsUpdates() {
   const cacheKey = `wx:os:simple_all`;
   return await withCache(cacheKey, CACHE_TTL_LONG, async () => {
@@ -179,11 +187,14 @@ async function handleSimpleAllOsUpdates() {
       }
       if (!results.length) return '暂未获取到系统版本信息，请稍后再试。';
       
-      // 【这里改回来了】变成可点击的链接
+      // 【修复】恢复点击链接
       let replyText = `最新系统版本：\n\n${results.join('\n')}\n\n查看详情：\n`;
-      replyText += `› <a href="weixin://bizmsgmenu?msgmenucontent=iOS&msgmenuid=iOS">iOS</a>      › <a href="weixin://bizmsgmenu?msgmenucontent=iPadOS&msgmenuid=iPadOS">iPadOS</a>\n`;
-      replyText += `› <a href="weixin://bizmsgmenu?msgmenucontent=macOS&msgmenuid=macOS">macOS</a>    › <a href="weixin://bizmsgmenu?msgmenucontent=watchOS&msgmenuid=watchOS">watchOS</a>\n`;
-      return replyText + `\n${SOURCE_NOTE}`;
+      replyText += `› <a href="weixin://bizmsgmenu?msgmenucontent=更新iOS&msgmenuid=iOS">iOS</a>      › <a href="weixin://bizmsgmenu?msgmenucontent=更新iPadOS&msgmenuid=iPadOS">iPadOS</a>\n`;
+      replyText += `› <a href="weixin://bizmsgmenu?msgmenucontent=更新macOS&msgmenuid=macOS">macOS</a>    › <a href="weixin://bizmsgmenu?msgmenucontent=更新watchOS&msgmenuid=watchOS">watchOS</a>\n`;
+      // 【修复】加回时间
+      replyText += `\n查询时间：${getFormattedTime()}\n\n${SOURCE_NOTE}`;
+      
+      return replyText;
     } catch (e) {
       return '查询系统版本失败，请稍后再试。';
     }
