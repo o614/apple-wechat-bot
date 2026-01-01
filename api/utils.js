@@ -12,83 +12,48 @@ const HTTP = axios.create({
 });
 
 // ----------------------
-// 核心增强功能
+// 缓存与限流
 // ----------------------
 
-/**
- * 缓存包装器 (带自动写入)
- */
 async function withCache(key, ttl, fetcher) {
-  if (!process.env.KV_REST_API_TOKEN) {
-    return await fetcher();
-  }
+  if (!process.env.KV_REST_API_TOKEN) return await fetcher();
   try {
     const cached = await kv.get(key);
     if (cached) return cached;
-  } catch (e) {
-    console.warn('KV Get Error:', e.message);
-  }
+  } catch (e) { console.warn('KV Get Error:', e.message); }
 
   const data = await fetcher();
-
   if (data) {
-    try {
-      await kv.set(key, data, { ex: ttl });
-    } catch (e) {
-      console.warn('KV Set Error:', e.message);
-    }
+    try { await kv.set(key, data, { ex: ttl }); } catch (e) {}
   }
   return data;
 }
 
-/**
- * [新增] 检查 URL 是否有效 (HEAD 请求)
- * 用于确认 1024x1024 图片是否存在
- */
+// 检查图片链接是否有效 (HEAD 请求)
 async function checkUrlAccessibility(url) {
   try {
-    await HTTP.head(url, { timeout: 1500 }); // 1.5秒超时，速战速决
+    await HTTP.head(url, { timeout: 1500 });
     return true;
-  } catch (e) {
-    return false;
-  }
+  } catch (e) { return false; }
 }
 
-/**
- * [新增] 用户限流检查
- * 返回 true 表示通过，false 表示被限制
- */
+// 用户限流检查
 async function checkUserRateLimit(openid) {
-  // 1. 如果没有配置 KV，或者用户是管理员，直接放行
-  if (!process.env.KV_REST_API_TOKEN || openid === ADMIN_OPENID) {
-    return true; 
-  }
+  // 无 KV 或管理员，直接放行
+  if (!process.env.KV_REST_API_TOKEN || openid === ADMIN_OPENID) return true;
 
-  const key = `limit:req:${openid}`; // Key 例如: limit:req:o4UNG...
-  const oneDaySeconds = 86400;
-
+  const key = `limit:req:${openid}`;
   try {
-    // 计数器 +1
     const currentCount = await kv.incr(key);
-    
-    // 如果是第一次计数 (currentCount === 1)，设置过期时间为 24 小时
-    if (currentCount === 1) {
-      await kv.expire(key, oneDaySeconds);
-    }
-
-    // 检查是否超限
-    if (currentCount > DAILY_REQUEST_LIMIT) {
-      return false;
-    }
-    return true;
-  } catch (e) {
-    console.error('Rate Limit Error:', e);
-    return true; // 如果 KV 挂了，降级为允许访问，不阻断业务
+    if (currentCount === 1) await kv.expire(key, 86400); // 24小时过期
+    return currentCount <= DAILY_REQUEST_LIMIT;
+  } catch (e) { 
+    return true; // KV 故障时不阻断业务
   }
 }
 
 // ----------------------
-// 基础工具
+// 业务工具
 // ----------------------
 
 function formatBytes(bytes) {
@@ -99,16 +64,11 @@ function formatBytes(bytes) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
+// 【极简稳健版】获取地区代码
+// 不再使用正则猜测，直接查双向字典
 function getCountryCode(identifier) {
-  const trimmed = String(identifier || '').trim();
-  const key = trimmed.toLowerCase();
-  if (ALL_SUPPORTED_REGIONS[trimmed]) return ALL_SUPPORTED_REGIONS[trimmed];
-  if (/^[a-z]{2}$/i.test(key)) {
-    for (const name in ALL_SUPPORTED_REGIONS) {
-      if (ALL_SUPPORTED_REGIONS[name] === key) return key;
-    }
-  }
-  return '';
+  const cleanKey = String(identifier || '').trim().toLowerCase();
+  return ALL_SUPPORTED_REGIONS[cleanKey] || '';
 }
 
 function isSupportedRegion(identifier) {
@@ -151,9 +111,7 @@ async function fetchExchangeRate(targetCurrencyCode) {
     const url = `https://api.frankfurter.app/latest?from=${targetCurrencyCode.toUpperCase()}&to=CNY`;
     const { data } = await axios.get(url, { timeout: 2500 });
     return data?.rates?.CNY || null;
-  } catch (e) {
-    return null;
-  }
+  } catch (e) { return null; }
 }
 
 async function fetchGdmf() {
@@ -162,14 +120,9 @@ async function fetchGdmf() {
   const agent = new https.Agent({ rejectUnauthorized: false });
   try {
     const response = await HTTP.get(url, { headers, httpsAgent: agent });
-    // [防御性编程] 简单的结构检查
-    if (!response.data || typeof response.data !== 'object') {
-        throw new Error('Invalid GDMF data');
-    }
+    if (!response.data || typeof response.data !== 'object') throw new Error('Invalid GDMF data');
     return response.data;
-  } catch (error) {
-    throw new Error('fetchGdmf Error');
-  }
+  } catch (error) { throw new Error('fetchGdmf Error'); }
 }
 
 function normalizePlatform(p) {
@@ -191,6 +144,7 @@ function toBeijingYMD(s) {
   return `${y}-${m}-${d2}`;
 }
 
+// 短日期格式 25/12/15
 function toBeijingShortDate(s) {
   if (!s) return '';
   const d = new Date(s); if (isNaN(d)) return '';
@@ -205,8 +159,6 @@ function collectReleases(data, platform) {
   const releases = [];
   const targetOS = normalizePlatform(platform);
   if (!targetOS || !data) return releases;
-  
-  // [防御性编程] 使用可选链 ?. 防止崩溃
   const assetSetNames = ['PublicAssetSets', 'AssetSets'];
   const foundBuilds = new Set();
 
@@ -222,7 +174,6 @@ function collectReleases(data, platform) {
                       const build = node.Build || node.BuildID || node.BuildVersion;
                       const dateStr = node.PostingDate || node.ReleaseDate || node.Date;
                       const devices = node.SupportedDevices;
-
                       if (version && build && !foundBuilds.has(build)) {
                           const actualPlatforms = determinePlatformsFromDevices(devices);
                           if (actualPlatforms.has(targetOS)) {
