@@ -64,7 +64,7 @@ const FEATURES = [
     name: 'PriceQueryMenu',
     match: (c) => c === '价格查询',
     needAuth: false,
-    handler: async () => '请回复“价格+应用名称”，例如：\n\n价格 YouTube\n价格 Minecraft\n价格 小红书'
+    handler: async () => '请回复“价格+应用名称”，例如：\n\n价格微信\n价格知乎\n价格小红书'
   },
   {
     name: 'PriceAdvanced',
@@ -113,7 +113,7 @@ const FEATURES = [
     name: 'AppQueryMenu',
     match: (c) => c === '应用查询',
     needAuth: false,
-    handler: async () => '请回复“查询+应用名称”，例如：\n\n查询微信\n查询TikTok\n查询小红书'
+    handler: async () => '请回复“查询+应用名称”，例如：\n\n查询微信\n查询知乎\n查询小红书'
   },
   {
     name: 'SystemUpdateAll',
@@ -132,7 +132,7 @@ const FEATURES = [
     name: 'IconQueryMenu',
     match: (c) => c === '图标查询',
     needAuth: false,
-    handler: async () => '请回复“图标+应用名称”，例如：\n\n图标 QQ\n图标 微信\n图标 TikTok'
+    handler: async () => '请回复“图标+应用名称”，例如：\n\n图标微信\n图标知乎\n图标小红书'
   },
   {
     name: 'AppIcon',
@@ -241,3 +241,4 @@ function buildTextReply(toUser, fromUser, content) {
   };
   return builder.buildObject(payload);
 }
+
