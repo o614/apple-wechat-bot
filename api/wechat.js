@@ -14,10 +14,10 @@ function buildWelcomeText(prefixLine = '') {
     `恭喜！你发现了果粉秘密基地\n\n` +
     `› <a href="weixin://bizmsgmenu?msgmenucontent=付款方式&msgmenuid=付款方式">付款方式</a>\n获取注册地址信息\n\n` +
     `› <a href="weixin://bizmsgmenu?msgmenucontent=应用查询&msgmenuid=1">应用查询</a>\n热门应用详情查询\n\n` +
-    `› <a href="weixin://bizmsgmenu?msgmenucontent=榜单美国&msgmenuid=3">榜单美国</a>\n全球免费付费榜单\n\n` +
-    `› <a href="weixin://bizmsgmenu?msgmenucontent=价格YouTube&msgmenuid=2">价格YouTube</a>\n应用价格优惠查询\n\n` +
+    `› <a href="weixin://bizmsgmenu?msgmenucontent=榜单查询&msgmenuid=3">榜单查询</a>\n全球免费付费榜单\n\n` +
+    `› <a href="weixin://bizmsgmenu?msgmenucontent=价格查询&msgmenuid=2">价格查询</a>\n应用价格优惠查询\n\n` +
     `› <a href="weixin://bizmsgmenu?msgmenucontent=切换美国&msgmenuid=4">切换美国</a>\n应用商店随意切换\n\n` +
-    `› <a href="weixin://bizmsgmenu?msgmenucontent=图标QQ&msgmenuid=5">图标QQ</a>\n获取官方高清图标\n\n更多服务请戳底部菜单栏了解`;
+    `› <a href="weixin://bizmsgmenu?msgmenucontent=图标查询&msgmenuid=5">图标查询</a>\n获取官方高清图标\n\n更多服务请戳底部菜单栏了解`;
   return prefixLine ? `${prefixLine}\n\n${base}` : base;
 }
 
@@ -29,10 +29,17 @@ const FEATURES = [
     handler: async (match, openId) => Handlers.handleAdminStatus(openId)
   },
   {
-    name: 'MyID', // 【加回】MyID 功能
+    name: 'MyID', 
     match: (c) => /^myid$/i.test(c),
     needAuth: false,
     handler: async (match, openId) => `你的 OpenID：${openId}`
+  },
+  // 【新增】榜单查询引导
+  {
+    name: 'ChartQueryMenu',
+    match: (c) => c === '榜单查询',
+    needAuth: false,
+    handler: async () => '请回复“榜单+地区”，例如：\n\n榜单美国\n榜单日本\n榜单香港'
   },
   {
     name: 'ChartSimple',
@@ -51,6 +58,13 @@ const FEATURES = [
       if (!isSupportedRegion(match[1])) return null;
       return Handlers.handleChartQuery(match[1].trim(), match[2]);
     }
+  },
+  // 【新增】价格查询引导
+  {
+    name: 'PriceQueryMenu',
+    match: (c) => c === '价格查询',
+    needAuth: false,
+    handler: async () => '请回复“价格+应用名称”，例如：\n\n价格 YouTube\n价格 Minecraft\n价格 小红书'
   },
   {
     name: 'PriceAdvanced',
@@ -112,6 +126,13 @@ const FEATURES = [
     match: (c) => c.match(/^更新\s*(iOS|iPadOS|macOS|watchOS|tvOS|visionOS)?$/i),
     needAuth: true,
     handler: async (match) => Handlers.handleDetailedOsUpdate((match[1] || 'iOS').trim())
+  },
+  // 【新增】图标查询引导
+  {
+    name: 'IconQueryMenu',
+    match: (c) => c === '图标查询',
+    needAuth: false,
+    handler: async () => '请回复“图标+应用名称”，例如：\n\n图标 QQ\n图标 微信\n图标 TikTok'
   },
   {
     name: 'AppIcon',
