@@ -14,44 +14,41 @@ try { ({ kv } = require('@vercel/kv')); } catch (e) { kv = null; }
 const CACHE_TTL_SHORT = 600; 
 const CACHE_TTL_LONG = 1800; 
 
-// 1. 榜单查询
+// 1. 榜单查询 (【修改】已切回旧版 iTunes RSS 接口，更稳定)
 async function handleChartQuery(regionInput, chartType) {
-  // 先获取代码用于API查询
   const regionCode = getCountryCode(regionInput);
   if (!regionCode) return '不支持的地区或格式错误。';
 
-  // 【修复】获取中文名称用于显示 (把 'jp' 变回 '日本')
   const displayName = getCountryName(regionCode);
-  // 如果 regionInput 本身就是中文名（如“美国”），直接用它作为交互文案会更自然
-  // 但为了保险起见，这里统一使用标准化的 displayName (比如用户输入 'us'，这里也会变成 '美国')
-  // 如果 getCountryName 返回空，兜底使用用户输入
   const interactiveName = displayName || regionInput;
 
   const cacheKey = `wx:chart:${regionCode}:${chartType === '免费榜' ? 'free' : 'paid'}`;
 
   return await withCache(cacheKey, CACHE_TTL_SHORT, async () => {
-    const type = chartType === '免费榜' ? 'top-free' : 'top-paid';
-    const url = `https://rss.marketingtools.apple.com/api/v2/${regionCode}/apps/${type}/10/apps.json`;
+    // 旧接口参数：topfreeapplications / toppaidapplications
+    const type = chartType === '免费榜' ? 'topfreeapplications' : 'toppaidapplications';
+    const url = `https://itunes.apple.com/${regionCode}/rss/${type}/limit=10/json`;
 
     try {
       const data = await getJSON(url);
-      const apps = (data && data.feed && data.feed.results) || [];
+      // 旧接口的数据在 feed.entry 里
+      const entries = (data && data.feed && data.feed.entry) || [];
       
-      if (!apps.length) return '获取榜单失败，可能 Apple 接口暂时繁忙。';
+      if (!entries.length) return '获取榜单失败，可能 Apple 接口暂时繁忙。';
 
-      // 标题使用中文名
       let resultText = `${interactiveName}${chartType}\n${getFormattedTime()}\n\n`;
 
-      resultText += apps.map((app, idx) => {
-        const appId = String(app.id || '');
-        const appName = app.name || '未知应用';
-        const appUrl = app.url;
+      resultText += entries.map((entry, idx) => {
+        // 解析旧接口复杂的字段
+        const appId = entry.id && entry.id.attributes ? entry.id.attributes['im:id'] : '';
+        const appName = entry['im:name'] ? entry['im:name'].label : '未知应用';
+        // 旧接口 url 在 link 数组里，通常取第一个
+        const appUrl = (entry.link && entry.link[0] && entry.link[0].attributes) ? entry.link[0].attributes.href : '';
+        
         if (BLOCKED_APP_IDS.has(appId)) return `${idx + 1}、${appName}`;
         return appUrl ? `${idx + 1}、<a href="${appUrl}">${appName}</a>` : `${idx + 1}、${appName}`;
       }).join('\n');
 
-      // 【修改点】 按钮改为使用中文名 (interactiveName)，确保和用户输入习惯一致
-      // 之前是: const toggleCmd = chartType === '免费榜' ? `${regionCode}付费榜` : `${regionCode}免费榜`;
       const toggleCmd = chartType === '免费榜' ? `${interactiveName}付费榜` : `${interactiveName}免费榜`;
       
       resultText += `\n› <a href="weixin://bizmsgmenu?msgmenucontent=${encodeURIComponent(toggleCmd)}&msgmenuid=chart_toggle">查看${chartType === '免费榜' ? '付费' : '免费'}榜单</a>`;
@@ -64,7 +61,7 @@ async function handleChartQuery(regionInput, chartType) {
   });
 }
 
-// 2. 价格查询
+// 2. 价格查询 (【修改】改为 limit=1，直接信任 Apple 排名，避免搜到广告)
 async function handlePriceQuery(appName, regionName, isDefaultSearch) {
   const code = getCountryCode(regionName);
   if (!code) return `不支持的地区或格式错误：${regionName}`;
@@ -72,13 +69,15 @@ async function handlePriceQuery(appName, regionName, isDefaultSearch) {
   const cacheKey = `wx:price:${code}:${appName.toLowerCase().replace(/\s/g, '')}`;
 
   return await withCache(cacheKey, CACHE_TTL_SHORT, async () => {
-    const url = `https://itunes.apple.com/search?term=${encodeURIComponent(appName)}&entity=software&country=${code}&limit=5`;
+    // 【修改点】 limit=5 改为 limit=1
+    const url = `https://itunes.apple.com/search?term=${encodeURIComponent(appName)}&entity=software&country=${code}&limit=1`;
     try {
       const data = await getJSON(url);
       const results = data.results || [];
       if (!results.length) return `在${regionName}未找到“${appName}”。`;
 
-      const best = pickBestMatch(appName, results);
+      // 【修改点】不再使用 pickBestMatch，直接取 results[0]
+      const best = results[0];
       const link = `<a href="${best.trackViewUrl}">${best.trackName}</a>`;
       const priceText = formatPrice(best);
 
@@ -99,18 +98,32 @@ async function handlePriceQuery(appName, regionName, isDefaultSearch) {
   });
 }
 
-// 3. 商店切换
+// 3. 商店切换 (【保留】之前定好的混合方案)
 function handleRegionSwitch(regionName) {
   const regionCode = getCountryCode(regionName);
   const dsf = DSF_MAP[regionCode];
   if (!regionCode || !dsf) return '不支持的地区或格式错误。';
-  const stableAppId = '375380948';
-  const redirect = `/WebObjects/MZStore.woa/wa/viewSoftware?mt=8&id=${stableAppId}`;
-  const fullUrl = `https://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${dsf}&cc=${regionCode}&url=${encodeURIComponent(redirect)}`;
+  
+  const stableAppId = '375380948'; // iBooks
+  const redirectPath = `/WebObjects/MZStore.woa/wa/viewSoftware?mt=8&id=${stableAppId}`;
+  
+  // 1. 原始 HTTPS 链接 (带 url 跳转 iBooks，防止白屏，适合旧系统直接点击)
+  const fullUrl = `https://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${dsf}&cc=${regionCode}&url=${encodeURIComponent(redirectPath)}`;
+  
+  // 2. 备用 ITMS 链接 (无 url 参数，纯重置，适合复制到 Safari)
+  const rawUrl = `itms-apps://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${dsf}&cc=${regionCode}`;
+
   const cnCode = 'cn';
   const cnDsf = DSF_MAP[cnCode];
-  const cnUrl = `https://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${cnDsf}&cc=${cnCode}&url=${encodeURIComponent(redirect)}`;
-  return `注意！仅浏览，需账号才能下载\n\n<a href="${fullUrl}">› 点击切换至【${regionName}】 App Store</a>\n\n› 点此切换至 <a href="${cnUrl}">【大陆】</a> App Store\n\n*出现“无法连接”后将自动跳转`;
+  const cnUrl = `https://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${cnDsf}&cc=${cnCode}&url=${encodeURIComponent(redirectPath)}`;
+  const cnRawUrl = `itms-apps://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${cnDsf}&cc=${cnCode}`;
+
+  return `注意！仅浏览，需账号才能下载\n*出现“无法连接”后将自动跳转\n\n` +
+         `› <a href="${fullUrl}">点击切换至【${regionName}】 App Store</a>\n\n` +
+         `› 点此切换至 <a href="${cnUrl}">【大陆】</a> App Store\n\n` +
+         `备用（请长按复制到 Safari 打开）\n\n` +
+         `${regionName}：\n<a href="weixin://">${rawUrl}</a>\n\n` +
+         `中国：\n<a href="weixin://">${cnRawUrl}</a>`;
 }
 
 // 4. 应用详情
@@ -176,7 +189,7 @@ async function lookupAppIcon(appName) {
   });
 }
 
-// 6. 系统更新 (【加回】超链接 & 时间)
+// 6. 系统更新
 async function handleSimpleAllOsUpdates() {
   const cacheKey = `wx:os:simple_all`;
   return await withCache(cacheKey, CACHE_TTL_LONG, async () => {
@@ -193,11 +206,9 @@ async function handleSimpleAllOsUpdates() {
       }
       if (!results.length) return '暂未获取到系统版本信息，请稍后再试。';
       
-      // 【修复】恢复点击链接
       let replyText = `最新系统版本：\n\n${results.join('\n')}\n\n查看详情：\n`;
       replyText += `› <a href="weixin://bizmsgmenu?msgmenucontent=更新iOS&msgmenuid=iOS">iOS</a>      › <a href="weixin://bizmsgmenu?msgmenucontent=更新iPadOS&msgmenuid=iPadOS">iPadOS</a>\n`;
       replyText += `› <a href="weixin://bizmsgmenu?msgmenucontent=更新macOS&msgmenuid=macOS">macOS</a>     › <a href="weixin://bizmsgmenu?msgmenucontent=更新watchOS&msgmenuid=watchOS">watchOS</a>\n`;
-      // 【修复】加回时间
       replyText += `\n查询时间：${getFormattedTime()}\n\n${SOURCE_NOTE}`;
       
       return replyText;
