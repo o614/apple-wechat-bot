@@ -104,26 +104,13 @@ function handleRegionSwitch(regionName) {
   const regionCode = getCountryCode(regionName);
   const dsf = DSF_MAP[regionCode];
   if (!regionCode || !dsf) return '不支持的地区或格式错误。';
-  
   const stableAppId = '375380948';
   const redirect = `/WebObjects/MZStore.woa/wa/viewSoftware?mt=8&id=${stableAppId}`;
-  
-  // 原始链接 (带 url 参数，点击跳转)
   const fullUrl = `https://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${dsf}&cc=${regionCode}&url=${encodeURIComponent(redirect)}`;
-  // 备用链接 (无 url 参数，纯文本复制用)
-  const rawUrl = `itms-apps://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${dsf}&cc=${regionCode}`;
-
   const cnCode = 'cn';
   const cnDsf = DSF_MAP[cnCode];
   const cnUrl = `https://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${cnDsf}&cc=${cnCode}&url=${encodeURIComponent(redirect)}`;
-  const cnRawUrl = `itms-apps://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${cnDsf}&cc=${cnCode}`;
-
-  return `注意！仅浏览，需账号才能下载\n*出现“无法连接”后将自动跳转\n\n` +
-         `› <a href="${fullUrl}">点击切换至【${regionName}】 App Store</a>\n\n` +
-         `› 点此切换至 <a href="${cnUrl}">【大陆】</a> App Store\n\n` +
-         `备用（请长按复制到 Safari 打开）\n\n` +
-         `${regionName}：<a href="weixin://">${rawUrl}</a>\n\n` +
-         `中国：<a href="weixin://">${cnRawUrl}</a>`;
+  return `注意！仅浏览，需账号才能下载\n\n<a href="${fullUrl}">› 点击切换至【${regionName}】 App Store</a>\n\n› 点此切换至 <a href="${cnUrl}">【大陆】</a> App Store\n\n*出现“无法连接”后将自动跳转`;
 }
 
 // 4. 应用详情
