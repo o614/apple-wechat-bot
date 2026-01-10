@@ -14,57 +14,93 @@ try { ({ kv } = require('@vercel/kv')); } catch (e) { kv = null; }
 const CACHE_TTL_SHORT = 600; 
 const CACHE_TTL_LONG = 1800; 
 
-// 1. 榜单查询 (调试版：输出具体错误信息)
+// 1. 榜单查询 (【最终版】双接口自动切换 + 智能超时控制)
 async function handleChartQuery(regionInput, chartType) {
   const regionCode = getCountryCode(regionInput);
   if (!regionCode) return '不支持的地区或格式错误。';
 
   const displayName = getCountryName(regionCode);
   const interactiveName = displayName || regionInput;
-
-  // 【修改】缓存前缀改为 v6 (确保调试信息不被旧缓存挡住)
-  const cacheKey = `v6:chart:${regionCode}:${chartType === '免费榜' ? 'free' : 'paid'}`;
+  
+  // 【修改】缓存前缀 v7
+  const cacheKey = `v7:chart:${regionCode}:${chartType === '免费榜' ? 'free' : 'paid'}`;
 
   return await withCache(cacheKey, CACHE_TTL_SHORT, async () => {
-    const type = chartType === '免费榜' ? 'topfreeapplications' : 'toppaidapplications';
-    const url = `https://itunes.apple.com/${regionCode}/rss/${type}/limit=10/json`;
+    // 准备两套方案
+    const isFree = chartType === '免费榜';
+    
+    // 方案A：旧接口 (数据全，但容易超时)
+    const typeOld = isFree ? 'topfreeapplications' : 'toppaidapplications';
+    const urlOld = `https://itunes.apple.com/${regionCode}/rss/${typeOld}/limit=10/json`;
+    
+    // 方案B：新接口 (速度快，用作备胎)
+    const typeNew = isFree ? 'top-free' : 'top-paid';
+    const urlNew = `https://rss.marketingtools.apple.com/api/v2/${regionCode}/apps/${typeNew}/10/apps.json`;
+
+    let apps = [];
+    let usedSource = 'old';
 
     try {
-      const data = await getJSON(url);
-      const entries = (data && data.feed && data.feed.entry) || [];
-      
-      if (!entries.length) return `⚠️ 数据为空：Apple 返回了空数组。\nURL: ${url}`;
-
-      let resultText = `${interactiveName}${chartType}\n${getFormattedTime()}\n\n`;
-
-      resultText += entries.map((entry, idx) => {
-        const appId = entry.id && entry.id.attributes ? entry.id.attributes['im:id'] : '';
-        const appName = entry['im:name'] ? entry['im:name'].label : '未知应用';
-        
-        let appUrl = '';
-        if (entry.link) {
-            if (Array.isArray(entry.link)) {
-                appUrl = (entry.link[0] && entry.link[0].attributes) ? entry.link[0].attributes.href : '';
-            } else if (entry.link.attributes) {
-                appUrl = entry.link.attributes.href;
+      // 1. 尝试旧接口 (设置 2.5秒 超时，快速失败)
+      // 注意：这里需要 getJSON 支持自定义 timeout，如果没有传，默认是 8秒，会导致微信超时无回复
+      const dataOld = await getJSON(urlOld, { timeout: 2500 });
+      const entries = (dataOld && dataOld.feed && dataOld.feed.entry) || [];
+      if (entries.length) {
+         // 解析旧数据格式
+         apps = entries.map(e => {
+            let u = '';
+            if (e.link) {
+               if (Array.isArray(e.link)) u = (e.link[0] && e.link[0].attributes) ? e.link[0].attributes.href : '';
+               else if (e.link.attributes) u = e.link.attributes.href;
             }
-        }
-        
-        if (BLOCKED_APP_IDS.has(appId)) return `${idx + 1}、${appName}`;
-        return appUrl ? `${idx + 1}、<a href="${appUrl}">${appName}</a>` : `${idx + 1}、${appName}`;
-      }).join('\n');
-
-      const toggleCmd = chartType === '免费榜' ? `${interactiveName}付费榜` : `${interactiveName}免费榜`;
-      
-      resultText += `\n› <a href="weixin://bizmsgmenu?msgmenucontent=${encodeURIComponent(toggleCmd)}&msgmenuid=chart_toggle">查看${chartType === '免费榜' ? '付费' : '免费'}榜单</a>`;
-      resultText += `\n\n${SOURCE_NOTE}`;
-      return resultText;
-
+            return {
+               id: e.id && e.id.attributes ? e.id.attributes['im:id'] : '',
+               name: e['im:name'] ? e['im:name'].label : '未知应用',
+               url: u
+            };
+         });
+      } else {
+         throw new Error('Old API empty');
+      }
     } catch (e) {
-      // 【诊断核心】这里会把具体的错误吐出来
-      const errMsg = e.message || '未知错误';
-      return `❌ 发生错误：\n${errMsg}\n\n请求地址：\n${url}`;
+      // 2. 旧接口失败/超时，降级使用新接口
+      console.log(`Switching to New API for ${regionCode}: ${e.message}`);
+      try {
+         usedSource = 'new';
+         const dataNew = await getJSON(urlNew, { timeout: 3000 });
+         const results = (dataNew && dataNew.feed && dataNew.feed.results) || [];
+         if (results.length) {
+            // 解析新数据格式
+            apps = results.map(r => ({
+               id: r.id,
+               name: r.name,
+               url: r.url
+            }));
+         }
+      } catch (errNew) {
+         console.error('Both APIs failed:', errNew.message);
+         return '获取榜单失败，Apple 接口暂时不可用。';
+      }
     }
+
+    if (!apps.length) return '获取榜单失败，暂无数据。';
+
+    // 3. 渲染结果
+    let resultText = `${interactiveName}${chartType}\n${getFormattedTime()}\n\n`;
+    
+    resultText += apps.map((app, idx) => {
+      const appId = String(app.id || '');
+      const appName = app.name || '未知应用';
+      
+      if (BLOCKED_APP_IDS.has(appId)) return `${idx + 1}、${appName}`;
+      return app.url ? `${idx + 1}、<a href="${app.url}">${appName}</a>` : `${idx + 1}、${appName}`;
+    }).join('\n');
+
+    const toggleCmd = chartType === '免费榜' ? `${interactiveName}付费榜` : `${interactiveName}免费榜`;
+    
+    resultText += `\n› <a href="weixin://bizmsgmenu?msgmenucontent=${encodeURIComponent(toggleCmd)}&msgmenuid=chart_toggle">查看${chartType === '免费榜' ? '付费' : '免费'}榜单</a>`;
+    resultText += `\n\n${SOURCE_NOTE}`;
+    return resultText;
   });
 }
 
