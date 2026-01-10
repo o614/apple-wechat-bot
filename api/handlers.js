@@ -14,90 +14,80 @@ try { ({ kv } = require('@vercel/kv')); } catch (e) { kv = null; }
 const CACHE_TTL_SHORT = 600; 
 const CACHE_TTL_LONG = 1800; 
 
-// 1. 榜单查询 (【最终版】双接口自动切换 + 智能超时控制)
+// 1. 榜单查询 (【并发竞速版】同时请求新旧接口，谁快用谁，防超时)
 async function handleChartQuery(regionInput, chartType) {
   const regionCode = getCountryCode(regionInput);
   if (!regionCode) return '不支持的地区或格式错误。';
 
   const displayName = getCountryName(regionCode);
   const interactiveName = displayName || regionInput;
-  
-  // 【修改】缓存前缀 v7
-  const cacheKey = `v7:chart:${regionCode}:${chartType === '免费榜' ? 'free' : 'paid'}`;
+
+  // 【修改】缓存前缀 v8
+  const cacheKey = `v8:chart:${regionCode}:${chartType === '免费榜' ? 'free' : 'paid'}`;
 
   return await withCache(cacheKey, CACHE_TTL_SHORT, async () => {
-    // 准备两套方案
     const isFree = chartType === '免费榜';
-    
-    // 方案A：旧接口 (数据全，但容易超时)
-    const typeOld = isFree ? 'topfreeapplications' : 'toppaidapplications';
-    const urlOld = `https://itunes.apple.com/${regionCode}/rss/${typeOld}/limit=10/json`;
-    
-    // 方案B：新接口 (速度快，用作备胎)
-    const typeNew = isFree ? 'top-free' : 'top-paid';
-    const urlNew = `https://rss.marketingtools.apple.com/api/v2/${regionCode}/apps/${typeNew}/10/apps.json`;
+    const randomParam = `?t=${Date.now()}`; // 防缓存僵尸
+
+    // 定义任务 A：旧接口
+    const taskOld = (async () => {
+      const type = isFree ? 'topfreeapplications' : 'toppaidapplications';
+      const url = `https://itunes.apple.com/${regionCode}/rss/${type}/limit=10/json${randomParam}`;
+      const data = await getJSON(url, { timeout: 3800 }); // 3.8秒限时
+      const entries = (data && data.feed && data.feed.entry) || [];
+      if (!entries.length) throw new Error('Old API empty');
+      // 解析旧格式
+      return entries.map(e => {
+        let u = '';
+        if (e.link) {
+           if (Array.isArray(e.link)) u = (e.link[0] && e.link[0].attributes) ? e.link[0].attributes.href : '';
+           else if (e.link.attributes) u = e.link.attributes.href;
+        }
+        return {
+           id: e.id && e.id.attributes ? e.id.attributes['im:id'] : '',
+           name: e['im:name'] ? e['im:name'].label : '未知应用',
+           url: u
+        };
+      });
+    })();
+
+    // 定义任务 B：新接口
+    const taskNew = (async () => {
+      const type = isFree ? 'top-free' : 'top-paid';
+      const url = `https://rss.marketingtools.apple.com/api/v2/${regionCode}/apps/${type}/10/apps.json${randomParam}`;
+      const data = await getJSON(url, { timeout: 3800 }); // 3.8秒限时
+      const results = (data && data.feed && data.feed.results) || [];
+      if (!results.length) throw new Error('New API empty');
+      // 解析新格式
+      return results.map(r => ({
+         id: r.id,
+         name: r.name,
+         url: r.url
+      }));
+    })();
 
     let apps = [];
-    let usedSource = 'old';
-
     try {
-      // 1. 尝试旧接口 (设置 2.5秒 超时，快速失败)
-      // 注意：这里需要 getJSON 支持自定义 timeout，如果没有传，默认是 8秒，会导致微信超时无回复
-      const dataOld = await getJSON(urlOld, { timeout: 2500 });
-      const entries = (dataOld && dataOld.feed && dataOld.feed.entry) || [];
-      if (entries.length) {
-         // 解析旧数据格式
-         apps = entries.map(e => {
-            let u = '';
-            if (e.link) {
-               if (Array.isArray(e.link)) u = (e.link[0] && e.link[0].attributes) ? e.link[0].attributes.href : '';
-               else if (e.link.attributes) u = e.link.attributes.href;
-            }
-            return {
-               id: e.id && e.id.attributes ? e.id.attributes['im:id'] : '',
-               name: e['im:name'] ? e['im:name'].label : '未知应用',
-               url: u
-            };
-         });
-      } else {
-         throw new Error('Old API empty');
-      }
+      // 【核心逻辑】竞速模式：谁先成功返回就用谁
+      // Promise.any 会等待第一个成功的 Promise，只有两个都失败才会报错
+      apps = await Promise.any([taskOld, taskNew]);
     } catch (e) {
-      // 2. 旧接口失败/超时，降级使用新接口
-      console.log(`Switching to New API for ${regionCode}: ${e.message}`);
-      try {
-         usedSource = 'new';
-         const dataNew = await getJSON(urlNew, { timeout: 3000 });
-         const results = (dataNew && dataNew.feed && dataNew.feed.results) || [];
-         if (results.length) {
-            // 解析新数据格式
-            apps = results.map(r => ({
-               id: r.id,
-               name: r.name,
-               url: r.url
-            }));
-         }
-      } catch (errNew) {
-         console.error('Both APIs failed:', errNew.message);
-         return '获取榜单失败，Apple 接口暂时不可用。';
-      }
+      // 两个都挂了，或者都超时了
+      console.error(`All APIs failed for ${regionCode}:`, e);
+      return `获取榜单失败。\n\n似乎 ${interactiveName} 的数据源暂时无法连接 (超时或被拒)。\n请过几分钟再试，或者尝试查询其他地区。`;
     }
 
-    if (!apps.length) return '获取榜单失败，暂无数据。';
-
-    // 3. 渲染结果
+    // 渲染结果
     let resultText = `${interactiveName}${chartType}\n${getFormattedTime()}\n\n`;
-    
+
     resultText += apps.map((app, idx) => {
       const appId = String(app.id || '');
       const appName = app.name || '未知应用';
-      
       if (BLOCKED_APP_IDS.has(appId)) return `${idx + 1}、${appName}`;
       return app.url ? `${idx + 1}、<a href="${app.url}">${appName}</a>` : `${idx + 1}、${appName}`;
     }).join('\n');
 
     const toggleCmd = chartType === '免费榜' ? `${interactiveName}付费榜` : `${interactiveName}免费榜`;
-    
     resultText += `\n› <a href="weixin://bizmsgmenu?msgmenucontent=${encodeURIComponent(toggleCmd)}&msgmenuid=chart_toggle">查看${chartType === '免费榜' ? '付费' : '免费'}榜单</a>`;
     resultText += `\n\n${SOURCE_NOTE}`;
     return resultText;
