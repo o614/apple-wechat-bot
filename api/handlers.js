@@ -14,7 +14,7 @@ try { ({ kv } = require('@vercel/kv')); } catch (e) { kv = null; }
 const CACHE_TTL_SHORT = 600; 
 const CACHE_TTL_LONG = 1800; 
 
-// 1. 榜单查询 (【修改】已切回旧版 iTunes RSS 接口，更稳定)
+// 1. 榜单查询 (【修复】兼容 Array/Object 链接结构 + 强制刷新缓存)
 async function handleChartQuery(regionInput, chartType) {
   const regionCode = getCountryCode(regionInput);
   if (!regionCode) return '不支持的地区或格式错误。';
@@ -22,16 +22,15 @@ async function handleChartQuery(regionInput, chartType) {
   const displayName = getCountryName(regionCode);
   const interactiveName = displayName || regionInput;
 
-  const cacheKey = `wx:chart:${regionCode}:${chartType === '免费榜' ? 'free' : 'paid'}`;
+  // 【关键修改】缓存前缀改为 v4，部署后立即生效，无需等待
+  const cacheKey = `v4:chart:${regionCode}:${chartType === '免费榜' ? 'free' : 'paid'}`;
 
   return await withCache(cacheKey, CACHE_TTL_SHORT, async () => {
-    // 旧接口参数：topfreeapplications / toppaidapplications
     const type = chartType === '免费榜' ? 'topfreeapplications' : 'toppaidapplications';
     const url = `https://itunes.apple.com/${regionCode}/rss/${type}/limit=10/json`;
 
     try {
       const data = await getJSON(url);
-      // 旧接口的数据在 feed.entry 里
       const entries = (data && data.feed && data.feed.entry) || [];
       
       if (!entries.length) return '获取榜单失败，可能 Apple 接口暂时繁忙。';
@@ -39,13 +38,25 @@ async function handleChartQuery(regionInput, chartType) {
       let resultText = `${interactiveName}${chartType}\n${getFormattedTime()}\n\n`;
 
       resultText += entries.map((entry, idx) => {
-        // 解析旧接口复杂的字段
         const appId = entry.id && entry.id.attributes ? entry.id.attributes['im:id'] : '';
         const appName = entry['im:name'] ? entry['im:name'].label : '未知应用';
-        // 旧接口 url 在 link 数组里，通常取第一个
-        const appUrl = (entry.link && entry.link[0] && entry.link[0].attributes) ? entry.link[0].attributes.href : '';
         
+        // 【核心修复】智能判断 link 是数组还是对象
+        // 之前只取数组[0]，导致单链接的 App 读不到链接
+        let appUrl = '';
+        if (entry.link) {
+            if (Array.isArray(entry.link)) {
+                // 如果是数组，取第一个
+                appUrl = (entry.link[0] && entry.link[0].attributes) ? entry.link[0].attributes.href : '';
+            } else if (entry.link.attributes) {
+                // 如果是对象（单链接），直接取属性
+                appUrl = entry.link.attributes.href;
+            }
+        }
+        
+        // 您的屏蔽逻辑保持不变
         if (BLOCKED_APP_IDS.has(appId)) return `${idx + 1}、${appName}`;
+        
         return appUrl ? `${idx + 1}、<a href="${appUrl}">${appName}</a>` : `${idx + 1}、${appName}`;
       }).join('\n');
 
@@ -61,22 +72,21 @@ async function handleChartQuery(regionInput, chartType) {
   });
 }
 
-// 2. 价格查询 (【修改】改为 limit=1，直接信任 Apple 排名，避免搜到广告)
+// 2. 价格查询 (limit=1 + 强制刷新缓存)
 async function handlePriceQuery(appName, regionName, isDefaultSearch) {
   const code = getCountryCode(regionName);
   if (!code) return `不支持的地区或格式错误：${regionName}`;
 
-  const cacheKey = `wx:price:${code}:${appName.toLowerCase().replace(/\s/g, '')}`;
+  // 【关键修改】缓存前缀 v4
+  const cacheKey = `v4:price:${code}:${appName.toLowerCase().replace(/\s/g, '')}`;
 
   return await withCache(cacheKey, CACHE_TTL_SHORT, async () => {
-    // 【修改点】 limit=5 改为 limit=1
     const url = `https://itunes.apple.com/search?term=${encodeURIComponent(appName)}&entity=software&country=${code}&limit=1`;
     try {
       const data = await getJSON(url);
       const results = data.results || [];
       if (!results.length) return `在${regionName}未找到“${appName}”。`;
 
-      // 【修改点】不再使用 pickBestMatch，直接取 results[0]
       const best = results[0];
       const link = `<a href="${best.trackViewUrl}">${best.trackName}</a>`;
       const priceText = formatPrice(best);
@@ -98,19 +108,16 @@ async function handlePriceQuery(appName, regionName, isDefaultSearch) {
   });
 }
 
-// 3. 商店切换 (【保留】之前定好的混合方案)
+// 3. 商店切换 (保持混合方案)
 function handleRegionSwitch(regionName) {
   const regionCode = getCountryCode(regionName);
   const dsf = DSF_MAP[regionCode];
   if (!regionCode || !dsf) return '不支持的地区或格式错误。';
   
-  const stableAppId = '375380948'; // iBooks
+  const stableAppId = '375380948';
   const redirectPath = `/WebObjects/MZStore.woa/wa/viewSoftware?mt=8&id=${stableAppId}`;
   
-  // 1. 原始 HTTPS 链接 (带 url 跳转 iBooks，防止白屏，适合旧系统直接点击)
   const fullUrl = `https://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${dsf}&cc=${regionCode}&url=${encodeURIComponent(redirectPath)}`;
-  
-  // 2. 备用 ITMS 链接 (无 url 参数，纯重置，适合复制到 Safari)
   const rawUrl = `itms-apps://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${dsf}&cc=${regionCode}`;
 
   const cnCode = 'cn';
@@ -126,10 +133,11 @@ function handleRegionSwitch(regionName) {
          `中国：\n<a href="weixin://">${cnRawUrl}</a>`;
 }
 
-// 4. 应用详情
+// 4. 应用详情 (强制刷新缓存)
 async function handleAppDetails(appName) {
   const code = 'us';
-  const cacheKey = `wx:detail:us:${appName.toLowerCase().replace(/\s/g, '')}`;
+  // 【关键修改】缓存前缀 v4
+  const cacheKey = `v4:detail:us:${appName.toLowerCase().replace(/\s/g, '')}`;
 
   return await withCache(cacheKey, CACHE_TTL_SHORT, async () => {
     const url = `https://itunes.apple.com/search?term=${encodeURIComponent(appName)}&entity=software&country=${code}&limit=1`;
@@ -160,9 +168,10 @@ async function handleAppDetails(appName) {
   });
 }
 
-// 5. 图标查询
+// 5. 图标查询 (强制刷新缓存)
 async function lookupAppIcon(appName) {
-  const cacheKey = `wx:icon:us:${appName.toLowerCase().replace(/\s/g, '')}`;
+  // 【关键修改】缓存前缀 v4
+  const cacheKey = `v4:icon:us:${appName.toLowerCase().replace(/\s/g, '')}`;
   return await withCache(cacheKey, CACHE_TTL_SHORT, async () => {
     try {
       const url = `https://itunes.apple.com/search?term=${encodeURIComponent(appName)}&country=us&entity=software&limit=1`;
@@ -189,9 +198,10 @@ async function lookupAppIcon(appName) {
   });
 }
 
-// 6. 系统更新
+// 6. 系统更新 (强制刷新缓存)
 async function handleSimpleAllOsUpdates() {
-  const cacheKey = `wx:os:simple_all`;
+  // 【关键修改】缓存前缀 v4
+  const cacheKey = `v4:os:simple_all`;
   return await withCache(cacheKey, CACHE_TTL_LONG, async () => {
     try {
       const data = await fetchGdmf();
@@ -220,7 +230,8 @@ async function handleSimpleAllOsUpdates() {
 
 async function handleDetailedOsUpdate(inputPlatform = 'iOS') {
   const platform = normalizePlatform(inputPlatform) || 'iOS';
-  const cacheKey = `wx:os:detail:${platform}`;
+  // 【关键修改】缓存前缀 v4
+  const cacheKey = `v4:os:detail:${platform}`;
   return await withCache(cacheKey, CACHE_TTL_LONG, async () => {
     try {
       const data = await fetchGdmf();
