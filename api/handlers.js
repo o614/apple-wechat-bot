@@ -25,8 +25,8 @@ async function handleChartQuery(regionInput, chartType) {
   const displayName = getCountryName(regionCode);
   const interactiveName = displayName || regionInput;
 
-  // 【修改】缓存前缀 v11
-  const cacheKey = `v11:chart:${regionCode}:${chartType === '免费榜' ? 'free' : 'paid'}`;
+  // 【修改】缓存前缀 v12
+  const cacheKey = `v12:chart:${regionCode}:${chartType === '免费榜' ? 'free' : 'paid'}`;
 
   return await withCache(cacheKey, CACHE_TTL_SHORT, async () => {
     let apps = []; 
@@ -84,7 +84,6 @@ async function handleChartQuery(regionInput, chartType) {
         const results = (dataNew && dataNew.feed && dataNew.feed.results) || [];
         
         if (results.length) {
-          sourceLabel = ' (备用源)'; 
           apps = results.map(r => ({
              id: r.id,
              name: r.name,
