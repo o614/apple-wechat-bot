@@ -23,7 +23,7 @@ async function handleChartQuery(regionInput, chartType) {
   const interactiveName = displayName || regionInput;
 
   // 【关键修改】缓存前缀改为 v4，部署后立即生效，无需等待
-  const cacheKey = `v4:chart:${regionCode}:${chartType === '免费榜' ? 'free' : 'paid'}`;
+  const cacheKey = `v5:chart:${regionCode}:${chartType === '免费榜' ? 'free' : 'paid'}`;
 
   return await withCache(cacheKey, CACHE_TTL_SHORT, async () => {
     const type = chartType === '免费榜' ? 'topfreeapplications' : 'toppaidapplications';
