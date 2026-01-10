@@ -170,10 +170,10 @@ function handleRegionSwitch(regionName) {
   const cnUrl = `https://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${cnDsf}&cc=${cnCode}&url=${encodeURIComponent(redirectPath)}`;
   const cnRawUrl = `itms-apps://itunes.apple.com/WebObjects/MZStore.woa/wa/resetAndRedirect?dsf=${cnDsf}&cc=${cnCode}`;
 
-  return `注意！仅浏览，需对应账号才能下载\n出现“无法连接”等待片刻自动跳转\n\n` +
+  return `注意！仅浏览，需对应账号才能下载\n*出现“无法连接”等待片刻自动跳转\n\n` +
          `› <a href="${fullUrl}">点击切换至【${regionName}】 的 App Store</a>\n\n` +
          `› 点此切换至 <a href="${cnUrl}">【国区】</a> 的 App Store\n\n\n` +
-         `备用（请长按并复制到 Safari 打开）\n` +
+         `*备用（请长按并复制到 Safari 打开）\n\n` +
          `${regionName}：\n<a href="weixin://">${rawUrl}</a>\n\n` +
          `中国：\n<a href="weixin://">${cnRawUrl}</a>`;
 }
